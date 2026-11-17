@@ -650,3 +650,30 @@ func TestFanOutAbsorbsDuplicatesWithinOneBatch(t *testing.T) {
 		t.Fatalf("inserted %d, want 1", n)
 	}
 }
+
+func TestClaimReturnsWebhookTarget(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("account-1", "e", 1, now))
+	e.fanOut(e.events("account-2", "e", 1, now))
+	if err := e.s.DisableWebhook(e.ctx, e.hook["account-2"]); err != nil {
+		t.Fatal(err)
+	}
+	e.fanOut(e.events("account-3", "e", 1, now))
+	if _, err := e.pool.Exec(e.ctx, `DELETE FROM webhooks WHERE id = $1`, e.hook["account-3"]); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]*store.Target{}
+	for _, d := range e.claim(store.ClaimParams{Accounts: 10, Quantum: 10, Limit: 10}) {
+		got[d.AccountID] = d.Target
+	}
+	if tg := got["account-1"]; tg == nil || tg.URL != "https://partner.example/hooks/account-1" || tg.Secret != "s3cret" || !tg.Active {
+		t.Errorf("account-1 target = %+v", tg)
+	}
+	if tg := got["account-2"]; tg == nil || tg.Active {
+		t.Errorf("disabled webhook target = %+v, want present and inactive", tg)
+	}
+	if tg, ok := got["account-3"]; !ok || tg != nil {
+		t.Errorf("deleted webhook: claimed %v, target %+v; want claimed with nil target", ok, tg)
+	}
+}

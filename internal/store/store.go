@@ -62,6 +62,17 @@ type Delivery struct {
 	LeaseUntil    *time.Time
 	LastError     *string
 	DeliveredAt   *time.Time
+
+	// Target is the webhook to deliver to, filled by Claim; nil if the
+	// webhook row no longer exists.
+	Target *Target
+}
+
+// Target is where and how a claimed delivery is sent.
+type Target struct {
+	URL    string
+	Secret string
+	Active bool // false once the webhook is disabled
 }
 
 // Lease identifies a claimed delivery for acking. Attempt is the fencing

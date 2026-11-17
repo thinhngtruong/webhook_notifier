@@ -88,12 +88,15 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Delivery, error) {
 			 WHERE d.id = c.id AND d.event_time = c.event_time
 			RETURNING d.id, d.event_time, d.account_id, d.webhook_id, d.event_id, d.event_name,
 			          d.payload, d.status, d.attempts, d.next_attempt_at, d.lease_until,
-			          d.last_error, d.delivered_at`,
+			          d.last_error, d.delivered_at,
+			          (SELECT w.post_url FROM webhooks w WHERE w.id = d.webhook_id),
+			          (SELECT w.secret   FROM webhooks w WHERE w.id = d.webhook_id),
+			          (SELECT w.status   FROM webhooks w WHERE w.id = d.webhook_id)`,
 			picked, p.Quantum, p.Limit, seconds(p.Lease))
 		if err != nil {
 			return fmt.Errorf("lease deliveries: %w", err)
 		}
-		claimed, err = pgx.CollectRows(rows, scanDelivery)
+		claimed, err = pgx.CollectRows(rows, scanClaimed)
 		if err != nil {
 			return fmt.Errorf("lease deliveries: %w", err)
 		}
@@ -130,6 +133,20 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Delivery, error) {
 		return nil, fmt.Errorf("claim: %w", err)
 	}
 	return claimed, nil
+}
+
+// scanClaimed reads a delivery followed by its webhook URL, secret and
+// status (all NULL when the webhook row is gone).
+func scanClaimed(r pgx.CollectableRow) (Delivery, error) {
+	var d Delivery
+	var url, secret, status *string
+	err := r.Scan(&d.ID, &d.EventTime, &d.AccountID, &d.WebhookID, &d.EventID, &d.EventName,
+		&d.Payload, &d.Status, &d.Attempts, &d.NextAttemptAt, &d.LeaseUntil,
+		&d.LastError, &d.DeliveredAt, &url, &secret, &status)
+	if err == nil && url != nil {
+		d.Target = &Target{URL: *url, Secret: *secret, Active: *status == "active"}
+	}
+	return d, err
 }
 
 func scanDelivery(r pgx.CollectableRow) (Delivery, error) {

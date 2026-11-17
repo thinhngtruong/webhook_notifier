@@ -11,6 +11,8 @@ x-notifier: &notifier
     postgres:
       condition: service_healthy
   restart: unless-stopped
+  # Longer than the 10s HTTP timeout so in-flight deliveries finish on stop.
+  stop_grace_period: 15s
 
 services:
   postgres:

@@ -255,8 +255,16 @@ A whale with a million pending deliveries gets the same share per round as an ac
 | 408, 429, 5xx, timeout, connection error | Back to pending with backoff; Retry-After respected |
 | 410 Gone                                 | Dead, and the webhook is disabled                   |
 | Other 4xx, or attempts exhausted         | Dead, replayable by an admin command (kept 30 days) |
+| 3xx (redirects are not followed)         | Dead: the registered URL is misconfigured, and following it would send the signed payload elsewhere |
+| Webhook disabled or deleted              | Dead without a request                              |
 
-- Backoff starts at 30s and triples after each failure, capped at 8h, with at most 10 attempts (about 24h). Each delay gets ±20% jitter so retries after an outage do not hit the partner as one spike. All values are configuration.
+- Backoff starts at 30s and triples after each failure, capped at 8h, with at most 10 attempts (about 24h). Each delay gets ±20% jitter so retries after an outage do not hit the partner as one spike. All values are configuration. A Retry-After header (seconds or HTTP date) wins when it asks for a longer wait than the backoff, capped at the 8h maximum; a shorter one is ignored, since waiting longer still respects it.
+
+- The claim returns each delivery with its webhook URL, secret and status, so workers need no extra lookup and see a disabled webhook immediately.
+
+- A worker whose lease was lost (the reaper reset the delivery while the request was in flight) has its ack rejected by the fencing check; the result is logged and dropped, since the delivery is already scheduled again.
+
+- On SIGTERM a replica stops claiming and waits for in-flight requests, which run on a context shutdown does not cancel and are bounded by the HTTP timeout. The container stop grace period (15s) is longer than that timeout.
 
 - Leases last 30s, longer than the HTTP timeout. The reaper resets expired leases every 10s, so a crashed worker's deliveries are sent again. The crashed attempt counts, so a delivery whose lease expires on its last allowed attempt goes to dead instead of pending.
 
