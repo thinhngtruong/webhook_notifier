@@ -289,8 +289,10 @@ func TestClaimFairnessWhaleVsSmallAccounts(t *testing.T) {
 	}
 
 	got := perAccount(e.claim(store.ClaimParams{Accounts: 50, Quantum: 10, Limit: 1000}))
-	if got["whale"] != 10 {
-		t.Errorf("whale got %d, want quantum 10", got["whale"])
+	// Every waiting account fits in this pass, so after the small accounts
+	// get all their work the whale takes the spare slots (work conserving).
+	if got["whale"] != 970 {
+		t.Errorf("whale got %d, want the 970 slots the small accounts did not need", got["whale"])
 	}
 	for i := range 10 {
 		acct := fmt.Sprintf("small-%02d", i)
@@ -305,10 +307,9 @@ func TestClaimFairnessWhaleVsSmallAccounts(t *testing.T) {
 		t.Errorf("whale should stay active and move to the back: %+v", q)
 	}
 
-	// With nobody else waiting the whale gets the whole pass (one quantum
-	// per pass; K only matters when several accounts wait).
-	if got := perAccount(e.claim(store.ClaimParams{Accounts: 50, Quantum: 10, Limit: 1000})); got["whale"] != 10 || len(got) != 1 {
-		t.Errorf("second pass = %v", got)
+	// With nobody else waiting the whale gets the rest.
+	if got := perAccount(e.claim(store.ClaimParams{Accounts: 50, Quantum: 10, Limit: 1000})); got["whale"] != 30 || len(got) != 1 {
+		t.Errorf("second pass = %v, want the whale's remaining 30", got)
 	}
 	e.assertRing()
 }
@@ -780,5 +781,48 @@ func TestClaimSharedServesOldestFirstAcrossAccounts(t *testing.T) {
 	}
 	if len(seen) != 56 {
 		t.Fatalf("leased %d of 56", len(seen))
+	}
+}
+
+func TestClaimGivesALoneAccountEveryFreeSlot(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("whale", "w", 100, now))
+	if got := len(e.claim(store.ClaimParams{Accounts: 50, Quantum: 10, Limit: 32})); got != 32 {
+		t.Fatalf("lone account claimed %d, want all 32 free slots (not just the quantum)", got)
+	}
+}
+
+func TestClaimGivesSpareSlotsToTheBusyAccountOnlyAfterOthers(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("whale", "w", 100, now))
+	for i := range 3 {
+		e.fanOut(e.events(fmt.Sprintf("small-%d", i), "s", 2, now))
+	}
+	got := perAccount(e.claim(store.ClaimParams{Accounts: 50, Quantum: 10, Limit: 32}))
+	for i := range 3 {
+		if n := got[fmt.Sprintf("small-%d", i)]; n != 2 {
+			t.Errorf("small-%d got %d, want all 2", i, n)
+		}
+	}
+	if got["whale"] != 26 {
+		t.Errorf("whale got %d, want the 26 spare slots", got["whale"])
+	}
+}
+
+func TestClaimKeepsTheQuantumWhenMoreAccountsWait(t *testing.T) {
+	e := newEnv(t)
+	for i := range 5 {
+		e.fanOut(e.events(fmt.Sprintf("account-%d", i), "e", 20, now))
+	}
+	// Only 3 of the 5 waiting accounts fit in this pass: the others must
+	// not wait behind extra work for these three.
+	got := perAccount(e.claim(store.ClaimParams{Accounts: 3, Quantum: 4, Limit: 100}))
+	if len(got) != 3 {
+		t.Fatalf("served %v, want 3 accounts", got)
+	}
+	for a, n := range got {
+		if n != 4 {
+			t.Errorf("%s got %d, want the quantum 4", a, n)
+		}
 	}
 }

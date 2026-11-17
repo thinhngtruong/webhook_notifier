@@ -11,7 +11,7 @@ Time spent per step (for the total estimate).
 | 5. Reaper + dead letters | 0.75h | Batched reaper pass + periodic loop, reaper batch config, replay command (refuses an empty filter without --all), smoke check of crash recovery and replay on the compose stack. Fixed a flaky store test that compared a Postgres timestamp with the host clock (Docker VM clock runs ahead). |
 | 6. Partner protection | 1h | Postpone (refunds the attempt), per-host limiter, circuit breaker, SSRF dial guard + HTTPS-only, worker integration, config. A mutation check found an untested ordering (breaker before limiter loses the half-open probe); added the test. Retry budget deferred. |
 | 7. Metrics (OpenTelemetry) | 1.25h | Switched from client_golang to the OTel SDK + Prometheus exporter at the user's request. Instruments named per design.md, scrape-tested; backlog gauges from one query; worker/dispatcher/claim/reaper instrumented; tier via LARGE_ACCOUNTS; Prometheus profile verified scraping both replicas. Tracing moved to a later step. |
-| 8. Producer, partner, benchmarks | 3h | Postgres event queue + dispatcher role, shared-queue baseline, fake partner/producer, in-process bench with 4 scenarios. Bugs found: bench replicas connected to the dev DB (pgxpool ConnString returns the original string); a test hang hidden by an over-generous timeout. |
+| 8. Producer, partner, benchmarks | 3.5h | Postgres event queue + dispatcher role, shared-queue baseline, fake partner/producer, in-process bench with 4 scenarios. Bugs found: bench replicas connected to the dev DB (pgxpool ConnString returns the original string); a test hang hidden by an over-generous timeout. |
 
 ## Process
 
@@ -22,17 +22,19 @@ Time spent per step (for the total estimate).
   (291/300 deliveries stranded), then passed again once restored.
 - `make up` uses `--force-recreate`: Compose v2.3.3 did not recreate containers after a rebuild.
 
-## Benchmark results (make bench, default scale, 2026-11-17, laptop, compose Postgres)
+## Benchmark results (make bench, default scale, laptop, compose Postgres)
 
-| Scenario | Result |
-|---|---|
-| Whale burst: small-account first-attempt p99 | shared 31.3s, fair 3.76s (8x better, under the 5s target) |
-| Whale burst: whale's last delivery | shared 34.3s, fair 51.7s (fair is slower for the whale, see findings) |
-| Scaling, 1 / 2 / 4 replicas | 252 / 475 / 844 deliveries/s (1.9x, 3.3x; 1,200/s offered) |
-| Reliability (5% errors, endpoint down 15s) | 5,997/5,997 delivered, 0 dead, healthy p99 111ms, down endpoint p99 21.3s |
-| Crash (1 of 2 replicas killed) | 5,997/5,997 delivered, 0 lost, 9 duplicates |
+Two runs on 2026-11-17/18: before and after making the quantum work-conserving. Runs vary by roughly ±20% on this laptop (the shared-queue whale time alone moved from 34s to 41s between runs).
 
-Findings to address:
+| Scenario | Run 1 (strict quantum) | Run 2 (work-conserving) |
+|---|---|---|
+| Whale burst: small-account first-attempt p99, shared → fair | 31.3s → 3.76s | 34.3s → 4.25s (under the 5s target) |
+| Whale burst: whale's last delivery, shared / fair | 34.3s / 51.7s | 41.5s / 48.9s |
+| Scaling, 1 / 2 / 4 replicas (1,200/s offered) | 252 / 475 / 844 /s | 239 / 443 / 846 /s |
+| Reliability (5% errors, endpoint down 15s) | 5,997/5,997, 0 dead, healthy p99 111ms | 5,997/5,997, 0 dead, healthy p99 244ms |
+| Crash (1 of 2 replicas killed) | 0 lost, 9 duplicates | 0 lost, 3 duplicates |
 
-1. The fair scheduler is not work-conserving for a lone whale: the quantum (10 per pass) and the account row lock (one replica serves an account at a time) cap the whale well below the free worker slots. The design claims a whale uses all spare capacity; it does not yet.
-2. In fair mode most of the small accounts' latency is ingest: their events wait behind the whale's 50k events in the FIFO input queue until the dispatcher fans those out (~2.5s here, ~50s at 1M events).
+Findings:
+
+1. Fixed (partly): the fair scheduler was not work-conserving for a lone whale (strict quantum of 10 per pass). The quantum is now a floor when every due account fits in a pass. The whale is still ~18% slower than with a shared queue: only one replica can hold the whale's account row at a time, so the other replica's pass comes back empty and idles. Next step would be letting a busy account be served by several replicas (e.g. splitting a whale into sub-queues) if this matters.
+2. Documented, not fixed: in fair mode most small-account latency is ingest. Their events wait behind the whale's 50k events in the FIFO input queue until fanned out (~2.5s here, ~50s at 1M). See bottlenecks.md item 7.

@@ -21,7 +21,8 @@ type ClaimParams struct {
 //
 //  1. Lock up to min(K, Limit) due accounts from the front of the ring
 //     (oldest last_served_at), skipping accounts another replica holds.
-//  2. Take up to Q due pending deliveries from each, skipping locked rows,
+//  2. Take up to Q due pending deliveries from each (more when every due
+//     account fits in this pass, see perAccount), skipping locked rows,
 //     and keep at most Limit of them, interleaved so every account gets its
 //     first row before any gets its second. Mark them in_flight, increment
 //     attempts and set the lease.
@@ -57,6 +58,17 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Delivery, error) {
 			return nil
 		}
 
+		// Work conserving: when every due account is in this pass (fewer
+		// were found than asked for), an account may take more than the
+		// quantum, up to the slots the other picked accounts cannot use.
+		// The (rn, ord) ordering still serves every other account first.
+		// When more accounts wait than fit, the quantum holds so they are
+		// not delayed by extra work for these ones.
+		perAccount := p.Quantum
+		if len(picked) < accounts {
+			perAccount = max(p.Quantum, p.Limit-len(picked)+1)
+		}
+
 		// rn = position within the account, ord = position in the ring.
 		// Ordering by (rn, ord) before LIMIT interleaves accounts when
 		// there are fewer free slots than K × Q.
@@ -87,7 +99,7 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Delivery, error) {
 			  FROM chosen c
 			 WHERE d.id = c.id AND d.event_time = c.event_time
 			`+claimReturning,
-			picked, p.Quantum, p.Limit, seconds(p.Lease))
+			picked, perAccount, p.Limit, seconds(p.Lease))
 		if err != nil {
 			return fmt.Errorf("lease deliveries: %w", err)
 		}

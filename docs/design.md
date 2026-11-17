@@ -177,7 +177,7 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 Round-robin with a quantum. Active accounts form a virtual ring ordered by when they were last served. Each turn the scheduler picks up to K accounts from the front of the ring (e.g. 50), takes at most Q due deliveries from each (the quantum, e.g. 10), leases them to workers, and moves those accounts to the back. Accounts with no work left leave the ring.
 
-A whale with a million pending deliveries gets the same share per round as an account with three, so its backlog only affects how many rounds it needs. When nobody else has work, the whale gets the full capacity. One pass of the claim loop is a single short transaction:
+A whale with a million pending deliveries gets the same share per round as an account with three, so its backlog only affects how many rounds it needs. When nobody else has work, the whale gets the full capacity. To make that true, the quantum is a floor, not a cap, when every due account fits in one pass: an account may then take up to the free slots minus the other picked accounts, and the interleaved ordering still gives every other account its due work first. When more accounts wait than fit in a pass, the quantum holds. (The first benchmark run showed a strict quantum left a lone whale using a fraction of the workers: 51.7s vs 34.3s with a shared queue.) One pass of the claim loop is a single short transaction:
 
 > **WITH** picked **AS** (
 >

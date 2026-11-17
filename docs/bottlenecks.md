@@ -20,6 +20,8 @@ Companion to [design.md](design.md).
 
 7.  Dispatcher lag. Add Dispatcher replicas pulling from the same event queue; competing consumers scale without partitioning. The Dispatcher only does a cheap insert, so the database usually becomes the limit first.
 
+    Measured in the PoC: during a whale burst the input queue is first-in-first-out, so small accounts' events wait until the whale's earlier events are fanned out (about 2.5s for 50k events in `make bench`, so roughly 50s for 1M). That is the largest part of the small accounts' latency in fair mode and would break the 5s target at the design's burst size. Fairness has to start at ingest: per-account or partitioned consumption of the event queue (or a managed queue with per-tenant fair queues), plus more dispatchers. The PoC keeps the FIFO mock, since the production queue replaces it.
+
 8.  Duplicates. These come with at-least-once delivery: a worker can crash after the POST but before the ack. The lease length bounds how often it happens, and partners are told to dedupe on X-Webhook-Id.
 
 9.  Going to 10x scale. The input event queue already acts as an ingest buffer. Beyond that: fair queues held in memory and sharded by account hash (or a managed cloud queue with per-tenant fair queues, see Fair scheduling in the design doc), with Postgres only for durable delivery state and dead letters.
