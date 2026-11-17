@@ -66,7 +66,7 @@ Rules:
 - Bug fixes start with a test that reproduces the bug.
 - Before writing a test, name the production change that would make it fail. Concurrency and invariant tests (races, lease fencing, ring consistency) must also be shown to fail against a deliberately broken implementation (a quick mutation check) before they count.
 - Test real behaviour through public APIs. Use real Postgres for anything touching SQL; never mock the database. Fakes only at process boundaries (HTTP partner, event source, clock).
-- Inject time (`now func() time.Time`) and randomness (jitter) so unit tests are deterministic. Never `time.Sleep` to wait for an outcome in unit tests; integration tests may wait briefly on database time (lease expiry).
+- Inject time (`now func() time.Time`) and randomness (jitter) so unit tests are deterministic. Never `time.Sleep` to wait for an outcome in unit tests; integration tests may wait briefly on database time (lease expiry). Compare timestamps written by Postgres against the database clock (`now()` in SQL), never the host clock: the Docker VM clock can be hundreds of ms off.
 - Exempt from test-first, but still verified: `Makefile`, `Dockerfile`, compose, Prometheus config (verified by `make up`), and the thin wiring in `cmd/*/main.go` (verified by a `make up` smoke check). SQL migrations are covered by the store integration tests.
 
 ## Verification before commit

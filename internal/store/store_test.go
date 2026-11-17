@@ -550,8 +550,14 @@ func TestAckRetryReschedulesAndReactivates(t *testing.T) {
 	// New work arrives: next_due_at moves forward to now, and only the new
 	// delivery is claimed.
 	e.fanOut(e.events("account-1", "new", 1, now))
-	if q := e.queue("account-1"); q.NextDueAt.After(time.Now()) {
-		t.Fatalf("fan-out did not pull next_due_at forward: %+v", q)
+	// Compare on the database clock: the Docker VM clock can run ahead of
+	// the host, so time.Now() here would make this check flaky.
+	var dueNow bool
+	if err := e.pool.QueryRow(e.ctx, `SELECT next_due_at <= now() FROM account_queues WHERE account_id = 'account-1'`).Scan(&dueNow); err != nil {
+		t.Fatal(err)
+	}
+	if !dueNow {
+		t.Fatalf("fan-out did not pull next_due_at forward: %+v", e.queue("account-1"))
 	}
 	ds := e.claim(store.ClaimParams{Accounts: 1, Quantum: 10, Limit: 10})
 	if len(ds) != 1 || ds[0].EventID != "new-0" {

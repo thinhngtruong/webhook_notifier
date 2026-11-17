@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webhook-notifier/internal/config"
+	"webhook-notifier/internal/reaper"
+	"webhook-notifier/internal/replay"
 	"webhook-notifier/internal/scheduler"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/worker"
@@ -28,10 +30,34 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	// Admin subcommand: notifier replay [--account ...] [--webhook ...] [--from ...] [--to ...] [--all]
+	if len(os.Args) > 1 && os.Args[1] == "replay" {
+		if err := runReplay(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "replay:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		logger.Error("notifier exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+func runReplay(args []string) error {
+	cfg, err := config.Load(nil, os.Getenv) // only DATABASE_URL is used
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	return replay.Run(ctx, store.New(pool), args, os.Stdout)
 }
 
 func run() error {
@@ -68,10 +94,6 @@ func run() error {
 		// the Postgres-backed queue arrives with the producer (step 8).
 		slog.Warn("dispatcher role idle: no cross-process event source yet")
 	}
-	if cfg.Reaper {
-		slog.Warn("role not implemented yet", "role", "reaper")
-	}
-
 	// Roles run until ctx is cancelled; Wait returns once each has finished
 	// its in-flight work.
 	var roles sync.WaitGroup
@@ -95,6 +117,15 @@ func run() error {
 		roles.Go(func() {
 			if err := loop.Run(ctx); err != nil {
 				slog.Error("claim loop", "err", err)
+			}
+		})
+	}
+
+	if cfg.Reaper {
+		r := reaper.New(store.New(pool), cfg.MaxAttempts, cfg.ReaperBatch, cfg.ReaperInterval)
+		roles.Go(func() {
+			if err := r.Run(ctx); err != nil {
+				slog.Error("reaper", "err", err)
 			}
 		})
 	}

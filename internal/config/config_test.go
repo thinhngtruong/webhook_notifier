@@ -89,3 +89,17 @@ func TestDispatcherSettings(t *testing.T) {
 		t.Errorf("zero batch: err = %v", err)
 	}
 }
+
+func TestReaperBatchSetting(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil || c.ReaperBatch != 1000 {
+		t.Fatalf("default reaper batch = %d, %v; want 1000", c.ReaperBatch, err)
+	}
+	c, err = Load(nil, env(map[string]string{"REAPER_BATCH": "50"}))
+	if err != nil || c.ReaperBatch != 50 {
+		t.Fatalf("env reaper batch = %d, %v", c.ReaperBatch, err)
+	}
+	if _, err := Load([]string{"--reaper-batch=0"}, env(nil)); err == nil || !strings.Contains(err.Error(), "reaper batch") {
+		t.Fatalf("zero batch: err = %v", err)
+	}
+}

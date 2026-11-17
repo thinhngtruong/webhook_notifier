@@ -254,7 +254,7 @@ A whale with a million pending deliveries gets the same share per round as an ac
 | 2xx                                      | Succeeded                                           |
 | 408, 429, 5xx, timeout, connection error | Back to pending with backoff; Retry-After respected |
 | 410 Gone                                 | Dead, and the webhook is disabled                   |
-| Other 4xx, or attempts exhausted         | Dead, replayable by an admin command (kept 30 days) |
+| Other 4xx, or attempts exhausted         | Dead, replayable with `notifier replay` (kept 30 days) |
 | 3xx (redirects are not followed)         | Dead: the registered URL is misconfigured, and following it would send the signed payload elsewhere |
 | Webhook disabled or deleted              | Dead without a request                              |
 
@@ -266,7 +266,9 @@ A whale with a million pending deliveries gets the same share per round as an ac
 
 - On SIGTERM a replica stops claiming and waits for in-flight requests, which run on a context shutdown does not cancel and are bounded by the HTTP timeout. The container stop grace period (15s) is longer than that timeout.
 
-- Leases last 30s, longer than the HTTP timeout. The reaper resets expired leases every 10s, so a crashed worker's deliveries are sent again. The crashed attempt counts, so a delivery whose lease expires on its last allowed attempt goes to dead instead of pending.
+- Leases last 30s, longer than the HTTP timeout. The reaper resets expired leases every 10s, so a crashed worker's deliveries are sent again. The crashed attempt counts, so a delivery whose lease expires on its last allowed attempt goes to dead instead of pending. Each pass resets expired leases in batches (1,000 per statement) until none are left, so a crash that orphaned many leases is recovered in one pass while every statement stays short.
+
+- Dead-letter replay: `notifier replay --account=… --webhook=… --from=… --to=…` (or `make replay ARGS=…`) returns matching dead deliveries to pending with a fresh attempt budget and puts their accounts back in the ring. Replays go through the fair scheduler like any other work. An empty filter is refused unless `--all` is given, so an admin cannot flood every partner by accident.
 
 - Per-endpoint concurrency limit and circuit breaker: a slow partner holds only a few workers, and while the circuit is open deliveries are postponed without using up attempts. A retry budget (~20% of attempts) keeps failing partners from crowding out fresh traffic.
 

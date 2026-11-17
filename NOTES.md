@@ -8,6 +8,7 @@ Time spent per step (for the total estimate).
 | 2. Schema and store | 1.5h | Migrations, partitions, fan-out, fair claim, fenced acks, reaper, replay. 16 tests. |
 | 3. Dispatcher | 0.75h | EventSource + in-memory queue, TTL webhook cache, fan-out batch, run loop. Test-first; behaviour already covered by earlier code was mutation-checked instead. |
 | 4. Scheduler + worker | 1.5h | Backoff, classification, Retry-After, signing, sender, claim returns target, worker acks, claim loop, wiring. Test-first; concurrency tests mutation-checked. Lost ~10 min to a hanging test (httptest handler waiting on an unread request context). Shared-queue baseline mode deferred to step 8 (benchmarks). |
+| 5. Reaper + dead letters | 0.75h | Batched reaper pass + periodic loop, reaper batch config, replay command (refuses an empty filter without --all), smoke check of crash recovery and replay on the compose stack. Fixed a flaky store test that compared a Postgres timestamp with the host clock (Docker VM clock runs ahead). |
 
 ## Process
 

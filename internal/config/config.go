@@ -45,6 +45,7 @@ type Config struct {
 
 	// Reaper.
 	ReaperInterval time.Duration
+	ReaperBatch    int // leases reset per statement
 }
 
 // Default returns the configuration described in docs/design.md.
@@ -66,6 +67,7 @@ func Default() Config {
 		JitterRatio:       0.2,
 		HTTPTimeout:       10 * time.Second,
 		ReaperInterval:    10 * time.Second,
+		ReaperBatch:       1000,
 	}
 }
 
@@ -97,6 +99,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.Float64Var(&c.JitterRatio, "jitter", c.JitterRatio, "retry delay jitter ratio, 0.2 = ±20% (JITTER_RATIO)")
 	fs.DurationVar(&c.HTTPTimeout, "http-timeout", c.HTTPTimeout, "partner request timeout (HTTP_TIMEOUT)")
 	fs.DurationVar(&c.ReaperInterval, "reaper-interval", c.ReaperInterval, "how often expired leases are reset (REAPER_INTERVAL)")
+	fs.IntVar(&c.ReaperBatch, "reaper-batch", c.ReaperBatch, "expired leases reset per statement (REAPER_BATCH)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -179,6 +182,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	float("JITTER_RATIO", &c.JitterRatio)
 	duration("HTTP_TIMEOUT", &c.HTTPTimeout)
 	duration("REAPER_INTERVAL", &c.ReaperInterval)
+	integer("REAPER_BATCH", &c.ReaperBatch)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config: invalid environment: %w", errors.Join(errs...))
@@ -209,6 +213,7 @@ func (c Config) Validate() error {
 	check(c.JitterRatio >= 0 && c.JitterRatio < 1, "jitter ratio must be in [0, 1)")
 	check(c.HTTPTimeout > 0, "HTTP timeout must be > 0")
 	check(c.ReaperInterval > 0, "reaper interval must be > 0")
+	check(c.ReaperBatch > 0, "reaper batch must be > 0")
 	// A lease shorter than the HTTP timeout would let the reaper hand a
 	// delivery to a second worker while the first is still sending it.
 	check(c.LeaseDuration > c.HTTPTimeout, "lease duration must be longer than the HTTP timeout")
