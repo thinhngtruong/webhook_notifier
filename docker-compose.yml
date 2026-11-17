@@ -47,15 +47,22 @@ services:
   producer:
     build: .
     image: webhook-notifier:dev
-    command: ["producer"]
-    depends_on: [notifier-1]
+    command: ["producer", "--mode=steady", "--rate=20", "--accounts=50"]
+    environment:
+      DATABASE_URL: postgres://notifier:notifier@postgres:5432/notifier?sslmode=disable
+      PARTNER_URL: http://partner:9090
+      WEBHOOK_SECRET: local-secret
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   partner:
     build: .
     image: webhook-notifier:dev
-    command: ["partner"]
-    depends_on: [notifier-1]
+    command: ["partner", "--latency=50ms", "--error-rate=0.01"]
+    environment:
+      WEBHOOK_SECRET: local-secret
     ports: ["9090:9090"]
     restart: unless-stopped
 
