@@ -119,7 +119,9 @@ func (w *Worker) process(ctx context.Context, d store.Delivery) (Outcome, string
 		}
 	}
 
-	if d.Attempts == 1 {
+	// A replay restarts at attempt 1 with an old event time; it is not a
+	// first attempt for the freshness SLI.
+	if d.Attempts == 1 && d.ReplayedAt == nil {
 		w.metrics.FirstAttempt(ctx, d.AccountID, d.EventTime)
 	}
 	resp, sendErr := w.sender.Send(ctx, Request{

@@ -76,7 +76,6 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
 - Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a command to requeue input dead letters (the runbook has the SQL), and batched acks.
-- A replayed delivery restarts at attempt 1 and is counted as a "first attempt" with its old event time, which skews the freshness metric.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
 ## What I would do next

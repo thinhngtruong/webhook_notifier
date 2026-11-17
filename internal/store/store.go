@@ -62,7 +62,8 @@ type Delivery struct {
 	LeaseUntil    *time.Time
 	LastError     *string
 	DeliveredAt   *time.Time
-	TraceContext  string // W3C traceparent of the fan-out span, or ""
+	TraceContext  string     // W3C traceparent of the fan-out span, or ""
+	ReplayedAt    *time.Time // set when an admin replayed it from dead
 
 	// Target is the webhook to deliver to, filled by Claim; nil if the
 	// webhook row no longer exists.

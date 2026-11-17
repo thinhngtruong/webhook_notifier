@@ -875,3 +875,22 @@ func TestClaimReturnsTraceContext(t *testing.T) {
 		t.Fatalf("trace contexts = %v", got)
 	}
 }
+
+func TestReplayMarksDeliveriesAsReplayed(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("account-1", "e", 2, now))
+	ds := e.claim(store.ClaimParams{Accounts: 1, Quantum: 10, Limit: 10})
+	for _, d := range ds {
+		if d.ReplayedAt != nil {
+			t.Fatalf("fresh delivery marked replayed: %+v", d)
+		}
+	}
+	e.s.AckDead(e.ctx, ds[0].Lease(), "HTTP 400")
+	if _, err := e.s.ReplayDead(e.ctx, store.ReplayFilter{AccountID: "account-1"}); err != nil {
+		t.Fatal(err)
+	}
+	again := e.claim(store.ClaimParams{Accounts: 1, Quantum: 10, Limit: 10})
+	if len(again) != 1 || again[0].ReplayedAt == nil || again[0].Attempts != 1 {
+		t.Fatalf("replayed claim = %+v, want attempt 1 marked replayed", again)
+	}
+}

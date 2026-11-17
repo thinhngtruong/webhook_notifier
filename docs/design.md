@@ -346,7 +346,7 @@ Implementation notes (PoC):
 - webhook_deliveries_total causes: http_2xx, http_3xx, http_4xx, http_410, http_429, http_5xx, timeout, connection, blocked, circuit_open, throttled, webhook_disabled. Outcomes: succeeded, retry, dead, gone, postponed.
 - Tiers: the notifier does not know list sizes, so the tier label comes from configuration (LARGE_ACCOUNTS → "large", every other account → "small"). Enough for the whale-vs-small benchmark; production would read the tier from account data.
 - The backlog gauges come from one query per scrape per replica, using the partial indexes. webhook_circuit_open and webhook_worker_slots_in_use are per replica.
-- A replayed delivery restarts at attempt 1, so its attempt is counted as a "first attempt" with an old event time. Replays are rare admin actions; a dedicated flag on the row would fix it.
+- A replayed delivery restarts at attempt 1 but carries replayed_at, so its attempt is not counted in first-attempt latency (it would otherwise report an old event time as a freshness miss).
 - Input queue gauges: webhook_input_events_waiting and webhook_input_oldest_event_age_seconds, read from the mock queue.
 
 ### Logs and tracing

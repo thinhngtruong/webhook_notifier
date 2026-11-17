@@ -340,3 +340,25 @@ func TestProcessRecordsMetrics(t *testing.T) {
 		})
 	}
 }
+
+func TestReplayedDeliveryIsNotCountedAsFirstAttempt(t *testing.T) {
+	st := store.New(testpg.New(t))
+	p := newPartner(t, 200, "")
+	m, scrape := metricstest.New(t, metrics.Options{})
+	d := claimOne(t, st, p.srv.URL, 1, false)
+	replayed := time.Now()
+	d.ReplayedAt = &replayed
+
+	w := worker.New(st, worker.NewSender(worker.SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}),
+		worker.Options{MaxAttempts: 10, Metrics: m})
+	if _, err := w.Process(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	out := scrape()
+	if strings.Contains(out, "webhook_first_attempt_latency_seconds_count") {
+		t.Error("a replayed delivery was counted in first-attempt latency")
+	}
+	if !strings.Contains(out, `webhook_deliveries_total{cause="http_2xx",outcome="succeeded"} 1`) {
+		t.Error("the replayed attempt itself should still be counted")
+	}
+}

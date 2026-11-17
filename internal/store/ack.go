@@ -114,7 +114,7 @@ func (s *Store) ReplayDead(ctx context.Context, f ReplayFilter) (int64, error) {
 			WITH upd AS (
 				UPDATE deliveries
 				   SET status = 'pending', attempts = 0, next_attempt_at = now(),
-				       lease_until = NULL, last_error = NULL
+				       lease_until = NULL, last_error = NULL, replayed_at = now()
 				 WHERE status = 'dead'
 				   AND ($1::text IS NULL OR account_id = $1)
 				   AND ($2::uuid IS NULL OR webhook_id = $2)
