@@ -32,8 +32,11 @@ lint:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	go vet ./...
 
-bench:
-	@echo "bench: not implemented yet (step 8)"
+# BENCH_SCALE=quick|default|full (full uses design.md sizes and takes hours).
+BENCH_SCALE ?= default
+
+bench: db ## run the four benchmark scenarios and print a report
+	go run ./cmd/bench -scale $(BENCH_SCALE) -database-url "$(TEST_DATABASE_URL)"
 
 replay: ## replay dead deliveries, e.g. make replay ARGS="--account=account-123"
 	$(COMPOSE) exec -T notifier-1 notifier replay $(ARGS)

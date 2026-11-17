@@ -388,4 +388,12 @@ Go and PostgreSQL. make up starts the database, notifier replicas, a fake produc
 | Partner returns 5% errors and one endpoint is down for 5 minutes                                                                   | Reliability and isolation | Every delivery eventually succeeds and healthy endpoints are not affected |
 | Kill a replica in the middle of a run                                                                                              | Crash safety              | No lost deliveries and a small, counted number of duplicates              |
 
+How the PoC runs them (`make bench`, `BENCH_SCALE=quick|default|full`):
+
+- Each scenario gets a throwaway database on the compose Postgres, the fake partner over real HTTP, and N in-process "replicas" (dispatcher, claim loop with workers, and reaper, each with its own connection pool). Running them in one process keeps runs repeatable; the database, the HTTP path and the SQL are the real ones.
+- A crash closes a replica's connection pool and stops it mid-run: requests already sent still reach the partner but are never acked, which is exactly what produces at-least-once duplicates.
+- Timings are compressed so runs take minutes: lease 3s, HTTP timeout 1s, reaper every 0.5s, backoff from 0.5s doubling to 5s, outage 15s instead of 5 minutes. `full` uses the design's sizes (1M whale events, 10-minute runs) and takes hours.
+- Latency is measured by the partner: from the event time in the payload to the first request (first attempt) or the first 2xx (delivered).
+- The whale-burst scenario raises the per-host limit so the single fake partner host is not the bottleneck: it isolates the scheduler. The outage scenario puts the failing endpoint on its own listener (its own host), since limits and circuits are per host.
+
 Bottlenecks and how the design evolves at higher scale are covered in the separate Bottleneck discussion doc.
