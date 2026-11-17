@@ -29,6 +29,7 @@ type Config struct {
 	WebhookCacheTTL   time.Duration // per-account webhook cache
 
 	// Fair scheduler.
+	ClaimMode       string        // "fair", or "shared" (benchmark baseline: one FIFO queue)
 	AccountsPerTick int           // K: accounts picked per claim pass
 	Quantum         int           // Q: max deliveries per account per pass
 	Workers         int           // worker pool size (bounds claims)
@@ -68,6 +69,7 @@ func Default() Config {
 		DispatchBatchSize:  500,
 		EventVisibility:    30 * time.Second,
 		WebhookCacheTTL:    30 * time.Second,
+		ClaimMode:          "fair",
 		AccountsPerTick:    50,
 		Quantum:            10,
 		Workers:            64,
@@ -104,6 +106,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.IntVar(&c.DispatchBatchSize, "dispatch-batch", c.DispatchBatchSize, "events per fan-out transaction (DISPATCH_BATCH_SIZE)")
 	fs.DurationVar(&c.EventVisibility, "event-visibility", c.EventVisibility, "received events reappear after this unless acked (EVENT_VISIBILITY)")
 	fs.DurationVar(&c.WebhookCacheTTL, "webhook-cache-ttl", c.WebhookCacheTTL, "per-account webhook cache TTL (WEBHOOK_CACHE_TTL)")
+	fs.StringVar(&c.ClaimMode, "claim-mode", c.ClaimMode, "fair, or shared for the benchmark baseline (CLAIM_MODE)")
 	fs.IntVar(&c.AccountsPerTick, "accounts-per-tick", c.AccountsPerTick, "accounts picked per claim pass (ACCOUNTS_PER_TICK)")
 	fs.IntVar(&c.Quantum, "quantum", c.Quantum, "max deliveries per account per pass (QUANTUM)")
 	fs.IntVar(&c.Workers, "workers", c.Workers, "worker pool size (WORKERS)")
@@ -197,6 +200,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	integer("DISPATCH_BATCH_SIZE", &c.DispatchBatchSize)
 	duration("EVENT_VISIBILITY", &c.EventVisibility)
 	duration("WEBHOOK_CACHE_TTL", &c.WebhookCacheTTL)
+	str("CLAIM_MODE", &c.ClaimMode)
 	integer("ACCOUNTS_PER_TICK", &c.AccountsPerTick)
 	integer("QUANTUM", &c.Quantum)
 	integer("WORKERS", &c.Workers)
@@ -238,6 +242,7 @@ func (c Config) Validate() error {
 	check(c.DispatchBatchSize > 0, "dispatch batch size must be > 0")
 	check(c.EventVisibility > 0, "event visibility must be > 0")
 	check(c.WebhookCacheTTL > 0, "webhook cache TTL must be > 0")
+	check(c.ClaimMode == "fair" || c.ClaimMode == "shared", "claim mode must be fair or shared")
 	check(c.AccountsPerTick > 0, "accounts per tick must be > 0")
 	check(c.Quantum > 0, "quantum must be > 0")
 	check(c.Workers > 0, "workers must be > 0")

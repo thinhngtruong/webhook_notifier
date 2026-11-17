@@ -738,3 +738,47 @@ func TestBacklog(t *testing.T) {
 		t.Errorf("oldest due age = %v, want ~10s", b.OldestDueAge)
 	}
 }
+
+func TestClaimSharedServesOldestFirstAcrossAccounts(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("whale", "w", 50, now))
+	time.Sleep(5 * time.Millisecond) // small accounts' work arrives after the burst
+	for i := range 3 {
+		e.fanOut(e.events(fmt.Sprintf("small-%d", i), "s", 2, now))
+	}
+
+	got, err := e.s.ClaimShared(e.ctx, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if per := perAccount(got); per["whale"] != 10 || len(per) != 1 {
+		t.Fatalf("shared claim = %v, want 10 whale deliveries (oldest first, no fairness)", per)
+	}
+	if got[0].Target == nil || got[0].Status != store.StatusInFlight || got[0].Attempts != 1 {
+		t.Fatalf("claimed delivery = %+v", got[0])
+	}
+
+	// Drains everything eventually, never leasing a delivery twice.
+	seen := map[store.UUID]bool{}
+	for _, d := range got {
+		seen[d.ID] = true
+	}
+	for {
+		more, err := e.s.ClaimShared(e.ctx, 7, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(more) == 0 {
+			break
+		}
+		for _, d := range more {
+			if seen[d.ID] {
+				t.Fatalf("delivery %s leased twice", d.ID)
+			}
+			seen[d.ID] = true
+		}
+	}
+	if len(seen) != 56 {
+		t.Fatalf("leased %d of 56", len(seen))
+	}
+}

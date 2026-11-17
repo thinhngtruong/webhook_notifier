@@ -155,3 +155,17 @@ func TestEventVisibilitySetting(t *testing.T) {
 		t.Fatal("zero visibility accepted")
 	}
 }
+
+func TestClaimModeSetting(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil || c.ClaimMode != "fair" {
+		t.Fatalf("default = %q, %v; want fair", c.ClaimMode, err)
+	}
+	c, err = Load(nil, env(map[string]string{"CLAIM_MODE": "shared"}))
+	if err != nil || c.ClaimMode != "shared" {
+		t.Fatalf("env = %q, %v", c.ClaimMode, err)
+	}
+	if _, err := Load([]string{"--claim-mode=random"}, env(nil)); err == nil || !strings.Contains(err.Error(), "claim mode") {
+		t.Fatalf("invalid mode: err = %v", err)
+	}
+}

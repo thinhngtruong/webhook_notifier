@@ -215,3 +215,25 @@ func TestRunCountsClaimErrors(t *testing.T) {
 		t.Fatalf("claim errors not counted:\n%s", out)
 	}
 }
+
+func TestSharedQueueClaimerIgnoresFairness(t *testing.T) {
+	st := store.New(testpg.New(t))
+	seed(t, st, 1, 20) // account-0 queued first
+	time.Sleep(5 * time.Millisecond)
+	ctx := context.Background()
+	hook, _ := st.InsertWebhook(ctx, store.Webhook{AccountID: "small", PostURL: "https://partner.example", Events: []string{"subscriber.created"}, Secret: "s"})
+	st.FanOut(ctx, []store.NewDelivery{{EventID: "small-1", EventName: "subscriber.created", EventTime: time.Now().UTC(), AccountID: "small", WebhookID: hook, Payload: []byte(`{}`)}})
+
+	ds, err := scheduler.SharedQueue(st).Claim(ctx, store.ClaimParams{Accounts: 50, Quantum: 2, Limit: 5, Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 5 {
+		t.Fatalf("claimed %d, want the slot limit 5 (quantum ignored)", len(ds))
+	}
+	for _, d := range ds {
+		if d.AccountID != "account-0" {
+			t.Fatalf("claimed %s; the shared queue serves the oldest work first", d.AccountID)
+		}
+	}
+}

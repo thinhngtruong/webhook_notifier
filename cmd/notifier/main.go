@@ -141,7 +141,12 @@ func run() error {
 			Breaker:     breaker,
 			Metrics:     m,
 		})
-		loop := scheduler.New(st, func(ctx context.Context, d store.Delivery) {
+		var claimer scheduler.Claimer = st
+		if cfg.ClaimMode == "shared" {
+			slog.Warn("claim mode shared: benchmark baseline without per-account fairness")
+			claimer = scheduler.SharedQueue(st)
+		}
+		loop := scheduler.New(claimer, func(ctx context.Context, d store.Delivery) {
 			if _, err := w.Process(ctx, d); err != nil {
 				// The lease expires and the reaper retries the delivery.
 				slog.Error("record delivery outcome", "delivery_id", d.ID.String(), "err", err)

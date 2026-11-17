@@ -86,12 +86,7 @@ func (s *Store) Claim(ctx context.Context, p ClaimParams) ([]Delivery, error) {
 			       lease_until = now() + make_interval(secs => $4)
 			  FROM chosen c
 			 WHERE d.id = c.id AND d.event_time = c.event_time
-			RETURNING d.id, d.event_time, d.account_id, d.webhook_id, d.event_id, d.event_name,
-			          d.payload, d.status, d.attempts, d.next_attempt_at, d.lease_until,
-			          d.last_error, d.delivered_at,
-			          (SELECT w.post_url FROM webhooks w WHERE w.id = d.webhook_id),
-			          (SELECT w.secret   FROM webhooks w WHERE w.id = d.webhook_id),
-			          (SELECT w.status   FROM webhooks w WHERE w.id = d.webhook_id)`,
+			`+claimReturning,
 			picked, p.Quantum, p.Limit, seconds(p.Lease))
 		if err != nil {
 			return fmt.Errorf("lease deliveries: %w", err)
@@ -195,3 +190,37 @@ func (s *Store) Backlog(ctx context.Context) (BacklogStats, error) {
 	b.OldestDueAge = time.Duration(ageSeconds * float64(time.Second))
 	return b, nil
 }
+
+// ClaimShared is the benchmark baseline: one shared queue for all accounts.
+// It leases up to limit due deliveries, oldest first, with no per-account
+// fairness. Not used in production.
+func (s *Store) ClaimShared(ctx context.Context, limit int, lease time.Duration) ([]Delivery, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE deliveries d
+		   SET status = 'in_flight', attempts = d.attempts + 1,
+		       lease_until = now() + make_interval(secs => $2)
+		  FROM (SELECT id, event_time FROM deliveries
+		         WHERE status = 'pending' AND next_attempt_at <= now()
+		         ORDER BY next_attempt_at
+		         LIMIT $1
+		         FOR UPDATE SKIP LOCKED) c
+		 WHERE d.id = c.id AND d.event_time = c.event_time
+		`+claimReturning, limit, seconds(lease))
+	if err != nil {
+		return nil, fmt.Errorf("claim shared: %w", err)
+	}
+	ds, err := pgx.CollectRows(rows, scanClaimed)
+	if err != nil {
+		return nil, fmt.Errorf("claim shared: %w", err)
+	}
+	return ds, nil
+}
+
+// claimReturning lists the columns scanClaimed reads: the delivery and its
+// webhook's URL, secret and status (NULL when the webhook row is gone).
+const claimReturning = `RETURNING d.id, d.event_time, d.account_id, d.webhook_id, d.event_id, d.event_name,
+		          d.payload, d.status, d.attempts, d.next_attempt_at, d.lease_until,
+		          d.last_error, d.delivered_at,
+		          (SELECT w.post_url FROM webhooks w WHERE w.id = d.webhook_id),
+		          (SELECT w.secret   FROM webhooks w WHERE w.id = d.webhook_id),
+		          (SELECT w.status   FROM webhooks w WHERE w.id = d.webhook_id)`

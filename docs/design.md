@@ -245,6 +245,9 @@ A whale with a million pending deliveries gets the same share per round as an ac
 | A partitioned log keyed by account_id         | No: hash collisions put whales next to small accounts, and there is no delayed retry.                                                                                                                                                                                                                                                                                       |
 | A managed cloud queue with per-tenant fair queues (message group = account_id) | Viable build-vs-buy option: the managed queue serves quieter tenants first, with no scheduler code. Trade-offs: the fairness policy is a black box (no quantum or plan weights), delayed retries are limited (short maximum delay and visibility timeout), and delivery state cannot be queried or selectively replayed without a separate table. I build the scheduler to keep control of these. |
 
+The shared queue is kept as a benchmark baseline (CLAIM_MODE=shared): it leases the oldest due deliveries across all accounts, with its own index on next_attempt_at so it is not slowed down by sorting the backlog. It is not meant for production.
+
+
 ## 4. Delivery, retries and failure handling
 
 - HTTP client with connection pooling, 10s timeout, no redirects. Headers: X-Webhook-Id, X-Webhook-Timestamp, X-Webhook-Signature (HMAC-SHA256 of timestamp and body).

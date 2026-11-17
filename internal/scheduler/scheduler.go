@@ -111,3 +111,14 @@ func (l *Loop) Run(ctx context.Context) error {
 
 // InFlight returns how many deliveries are being processed right now.
 func (l *Loop) InFlight() int64 { return l.inFlight.Load() }
+
+// SharedQueue adapts the store's shared-queue claim (benchmark baseline)
+// to the Claimer interface. It honours the slot limit and lease and
+// ignores the fairness parameters.
+func SharedQueue(st *store.Store) Claimer { return sharedQueue{st} }
+
+type sharedQueue struct{ st *store.Store }
+
+func (q sharedQueue) Claim(ctx context.Context, p store.ClaimParams) ([]store.Delivery, error) {
+	return q.st.ClaimShared(ctx, p.Limit, p.Lease)
+}
