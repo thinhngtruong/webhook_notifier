@@ -80,6 +80,13 @@ services:
       - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports: ["9091:9090"]
 
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: ["metrics"]
+    volumes:
+      - ./deploy/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports: ["9093:9093"]
+
   jaeger:
     image: jaegertracing/jaeger:2.5.0
     profiles: ["metrics"]

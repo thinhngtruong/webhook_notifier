@@ -135,3 +135,110 @@ tests:
       - eval_time: 30m
         alertname: WebhookInputDeadLetters
         exp_alerts: []
+
+  # Freshness SLO (99% of small-tier first attempts within 5s). Three
+  # healthy days, then 20% late for 70 minutes: a 20x burn. The fast page
+  # fires once its 2m hold passes; the 3-day ticket does not, because the
+  # healthy history dilutes one bad hour (~0.3% over 3d).
+  - interval: 1m
+    input_series:
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="small",le="5",instance="notifier-1"}'
+        values: '0+100x4320 432000+80x70'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="small",instance="notifier-1"}'
+        values: '0+100x4320 432000+100x70'
+    alert_rule_test:
+      - eval_time: 3d1m
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 3d70m
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, slo: freshness}
+            exp_annotations:
+              summary: Small accounts' webhooks are late, burning the freshness error budget fast
+              description: More than 14.4x the 1% budget of small-tier first attempts later than 5s, over 1h and 5m. Check webhook_oldest_due_pending_age_seconds and the input queue age (ours), then partner latency (theirs).
+              runbook: docs/runbook.md#freshness
+      - eval_time: 3d70m
+        alertname: WebhookFreshnessBudgetBurnTicket
+        exp_alerts: []
+
+  # 8% late for 7 hours: above the 6x slow-burn threshold, below the fast one.
+  - interval: 5m
+    input_series:
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="small",le="5",instance="notifier-1"}'
+        values: '0+92x100'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="small",instance="notifier-1"}'
+        values: '0+100x100'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: WebhookFreshnessBudgetBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: page, slo: freshness}
+            exp_annotations:
+              summary: Small accounts' webhooks are late, burning the freshness error budget
+              description: More than 6x the 1% budget of small-tier first attempts later than 5s, over 6h and 30m. Check webhook_oldest_due_pending_age_seconds and the input queue age (ours), then partner latency (theirs).
+              runbook: docs/runbook.md#freshness
+      - eval_time: 7h
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts: []
+
+  # 2% late for 3.5 days: a ticket, no page.
+  - interval: 30m
+    input_series:
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="small",le="5",instance="notifier-1"}'
+        values: '0+98x200'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="small",instance="notifier-1"}'
+        values: '0+100x200'
+    alert_rule_test:
+      - eval_time: 84h
+        alertname: WebhookFreshnessBudgetBurnTicket
+        exp_alerts:
+          - exp_labels: {severity: ticket, slo: freshness}
+            exp_annotations:
+              summary: The freshness error budget is being used faster than it refills
+              description: Small-tier first attempts later than 5s are above the 1% budget over 3d and 6h. Look for slow growth in backlog or partner latency.
+              runbook: docs/runbook.md#freshness
+      - eval_time: 84h
+        alertname: WebhookFreshnessBudgetBurnSlow
+        exp_alerts: []
+
+  # 0.5% late, and late large accounts (not in the SLO): nothing fires.
+  - interval: 5m
+    input_series:
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="small",le="5",instance="notifier-1"}'
+        values: '0+995x100'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="small",instance="notifier-1"}'
+        values: '0+1000x100'
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="large",le="5",instance="notifier-1"}'
+        values: '0+10x100'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="large",instance="notifier-1"}'
+        values: '0+1000x100'
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: WebhookFreshnessBudgetBurnSlow
+        exp_alerts: []
+
+  # 60 minutes 20% late after healthy days, then 15 minutes healthy: the 1h
+  # window is still at 15% (above 14.4x), but the 5m window shows recovery,
+  # so the page stops instead of firing for another hour.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_first_attempt_latency_seconds_bucket{tier="small",le="5",instance="notifier-1"}'
+        values: '0+100x4320 432000+80x60 436800+100x15'
+      - series: 'webhook_first_attempt_latency_seconds_count{tier="small",instance="notifier-1"}'
+        values: '0+100x4320 432000+100x60 438000+100x15'
+    alert_rule_test:
+      - eval_time: 3d60m
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, slo: freshness}
+            exp_annotations:
+              summary: Small accounts' webhooks are late, burning the freshness error budget fast
+              description: More than 14.4x the 1% budget of small-tier first attempts later than 5s, over 1h and 5m. Check webhook_oldest_due_pending_age_seconds and the input queue age (ours), then partner latency (theirs).
+              runbook: docs/runbook.md#freshness
+      - eval_time: 3d76m
+        alertname: WebhookFreshnessBudgetBurnFast
+        exp_alerts: []

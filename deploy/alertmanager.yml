@@ -1,0 +1,28 @@
+# Alertmanager routing. Tested by make test-alerts (amtool).
+#
+# Pages and tickets go to separate receivers. In the PoC both receivers
+# have no integration, so alerts are visible in the Alertmanager UI
+# (http://localhost:9093) only; production would add the on-call paging
+# integration to "pager" and the ticket queue's webhook to "tickets".
+route:
+  receiver: tickets
+  group_by: [alertname, slo]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="page"']
+      receiver: pager
+      repeat_interval: 1h
+
+inhibit_rules:
+  # While an SLO is paging, its slower ticket alert is noise. Only SLO
+  # alerts take part: alerts without an slo label would otherwise all match
+  # each other (empty equals empty).
+  - source_matchers: ['severity="page"', 'slo=~".+"']
+    target_matchers: ['severity="ticket"', 'slo=~".+"']
+    equal: [slo]
+
+receivers:
+  - name: pager
+  - name: tickets

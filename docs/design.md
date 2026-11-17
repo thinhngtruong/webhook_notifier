@@ -373,7 +373,7 @@ Alerts fire on SLO burn rate rather than fixed thresholds, using a long and a sh
 
 - Dead letters are tickets, never pages: more than 1% of attempts ending dead over 30m (postponed attempts excluded so a circuit cannot hide them), a dead-letter queue above 10,000, or one that grew by more than 1,000 in an hour. Runbook: docs/runbook.md#dead-letters.
 
-- In the PoC: deploy/alerts.yml holds the dead-letter rules (delivery dead letters as tickets, input dead letters as a page), unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. There is no Alertmanager, so alerts are only visible in Prometheus. The SLO burn-rate alerts above are not written yet.
+- In the PoC: deploy/alerts.yml holds the dead-letter rules (delivery dead letters as tickets, input dead letters as a page), unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. The freshness SLO burn-rate alerts above are implemented as recording rules (error ratio over 5m, 30m, 1h, 6h, 3d from the first-attempt histogram, small tier, le="5") and the three multi-window alerts, all promtool-tested, including that a page stops once the short window recovers. Alertmanager routes pages and tickets to separate receivers (no integrations in the PoC) and inhibits an SLO's ticket while its page fires; `make test-alerts` checks the routing with amtool. Not alerted yet: the 1s p50 freshness objective, and the reliability SLO, which needs "failed because of us" counted per delivery.
 
 - Every page links to a short runbook: how to tell our fault from a partner fault, how to check fairness (backlog by tier), how to pause or throttle an account, and how to replay dead deliveries.
 

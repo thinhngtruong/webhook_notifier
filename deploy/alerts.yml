@@ -56,3 +56,67 @@ groups:
           summary: Events in the input dead-letter queue produced no deliveries
           description: The dispatcher dead-lettered events (malformed, or received too many times without an ack). Their webhooks were never called, which breaks the durability SLO. Inspect events_dead_letters, fix the cause, then requeue them.
           runbook: docs/runbook.md#input-dead-letters
+
+  # Freshness SLO (design.md section 5): 99% of small-tier first attempts
+  # within 5s. Error ratio = 1 - (attempts in the le="5" bucket / all), per
+  # window, summed across replicas. Large accounts are measured by
+  # throughput, not latency, so they are excluded.
+  - name: webhook-freshness-slo-recording
+    rules:
+      - record: webhook:freshness_error_ratio:rate5m
+        expr: 1 - sum(rate(webhook_first_attempt_latency_seconds_bucket{tier="small",le="5"}[5m])) / sum(rate(webhook_first_attempt_latency_seconds_count{tier="small"}[5m]))
+      - record: webhook:freshness_error_ratio:rate30m
+        expr: 1 - sum(rate(webhook_first_attempt_latency_seconds_bucket{tier="small",le="5"}[30m])) / sum(rate(webhook_first_attempt_latency_seconds_count{tier="small"}[30m]))
+      - record: webhook:freshness_error_ratio:rate1h
+        expr: 1 - sum(rate(webhook_first_attempt_latency_seconds_bucket{tier="small",le="5"}[1h])) / sum(rate(webhook_first_attempt_latency_seconds_count{tier="small"}[1h]))
+      - record: webhook:freshness_error_ratio:rate6h
+        expr: 1 - sum(rate(webhook_first_attempt_latency_seconds_bucket{tier="small",le="5"}[6h])) / sum(rate(webhook_first_attempt_latency_seconds_count{tier="small"}[6h]))
+      - record: webhook:freshness_error_ratio:rate3d
+        expr: 1 - sum(rate(webhook_first_attempt_latency_seconds_bucket{tier="small",le="5"}[3d])) / sum(rate(webhook_first_attempt_latency_seconds_count{tier="small"}[3d]))
+
+  # Multi-window burn-rate alerts (budget 1%): a long window shows the burn
+  # is real, a short one that it is still happening, so alerts stop soon
+  # after recovery.
+  - name: webhook-freshness-slo
+    rules:
+      - alert: WebhookFreshnessBudgetBurnFast
+        expr: |
+          webhook:freshness_error_ratio:rate1h > (14.4 * 0.01)
+          and
+          webhook:freshness_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+          slo: freshness
+        annotations:
+          summary: Small accounts' webhooks are late, burning the freshness error budget fast
+          description: More than 14.4x the 1% budget of small-tier first attempts later than 5s, over 1h and 5m. Check webhook_oldest_due_pending_age_seconds and the input queue age (ours), then partner latency (theirs).
+          runbook: docs/runbook.md#freshness
+
+      - alert: WebhookFreshnessBudgetBurnSlow
+        expr: |
+          webhook:freshness_error_ratio:rate6h > (6 * 0.01)
+          and
+          webhook:freshness_error_ratio:rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: page
+          slo: freshness
+        annotations:
+          summary: Small accounts' webhooks are late, burning the freshness error budget
+          description: More than 6x the 1% budget of small-tier first attempts later than 5s, over 6h and 30m. Check webhook_oldest_due_pending_age_seconds and the input queue age (ours), then partner latency (theirs).
+          runbook: docs/runbook.md#freshness
+
+      - alert: WebhookFreshnessBudgetBurnTicket
+        expr: |
+          webhook:freshness_error_ratio:rate3d > 0.01
+          and
+          webhook:freshness_error_ratio:rate6h > 0.01
+        for: 1h
+        labels:
+          severity: ticket
+          slo: freshness
+        annotations:
+          summary: The freshness error budget is being used faster than it refills
+          description: Small-tier first attempts later than 5s are above the 1% budget over 3d and 6h. Look for slow growth in backlog or partner latency.
+          runbook: docs/runbook.md#freshness

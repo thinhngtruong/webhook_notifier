@@ -11,7 +11,7 @@ Needs Docker. Go 1.27 is only needed for tests and benchmarks on the host.
 
 ```sh
 make up          # postgres, 2 notifier replicas, fake producer (20 events/s), fake partner
-make up-metrics  # the same plus Prometheus (:9091, alert rules loaded) and the trace viewer (:16686)
+make up-metrics  # the same plus Prometheus (:9091), Alertmanager (:9093) and the trace viewer (:16686)
 make down        # stop and delete the data volume
 ```
 
@@ -20,14 +20,14 @@ make down        # stop and delete the data volume
 | Notifier replicas: `/healthz`, `/metrics` | http://localhost:8081, http://localhost:8082 |
 | Fake partner: what it received (latency by tier, duplicates, bad signatures) | http://localhost:9090/stats |
 | Fail a partner endpoint for a while | `curl -X POST 'localhost:9090/admin/outage?endpoint=account-00001&for=2m'` |
-| Prometheus (with `make up-metrics`) | http://localhost:9091 |
+| Prometheus and Alertmanager (with `make up-metrics`) | http://localhost:9091, http://localhost:9093 |
 | Traces: event → fan-out → attempt → HTTP call (with `make up-metrics`) | http://localhost:16686 |
 | Postgres | `localhost:55432`, user/password/db `notifier` |
 
 Other commands:
 
 ```sh
-make test        # unit + integration tests (real Postgres in Docker, -race), alert rule tests
+make test        # unit + integration tests (real Postgres in Docker, -race), alert rule and routing tests
 make bench       # the four benchmark scenarios, about 4 minutes; BENCH_SCALE=quick|default|full
 make replay ARGS="--account=account-123"   # replay dead deliveries (see docs/runbook.md)
 make requeue-events ARGS="--reason-prefix=received"   # requeue input dead letters
@@ -76,17 +76,17 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), and batched acks.
+- Not built yet: the retry budget, batched acks, and alerts for the reliability SLO and the 1s p50 objective (the freshness SLO burn-rate alerts exist). Alertmanager receivers have no integrations, so alerts are only visible in its UI.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
 ## What I would do next
 
 1. Fair ingest: consume the event queue per account (or partitioned by account), so a burst cannot delay other accounts before fan-out.
 2. Let several replicas serve one busy account (split a whale into sub-queues), closing the remaining whale gap.
-3. The SLO burn-rate alerts and Alertmanager routing from the design.
+3. Count deliveries that fail because of us, so the reliability SLO can be alerted on like freshness, and connect Alertmanager to real paging and ticketing.
 4. Batched acks to cut write load, and the retry budget.
 5. Run the full-size benchmark on production-like hardware and tune quantum, accounts per tick and pool sizes from the results.
 
 ## Time spent
 
-About 15 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
+About 16 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.

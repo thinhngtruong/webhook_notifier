@@ -17,7 +17,8 @@ Time spent per step (for the total estimate).
 | 9. README | 0.5h | How to run, assumptions, benchmark results, limitations, next steps. |
 | 10. Tracing | 1h | W3C trace context on queue and delivery rows; producer, fan-out, deliver and HTTP spans; parent-based ratio sampling; OTLP to a local trace viewer. Found: a package-level tracer stays bound to the first provider installed. |
 | 11. Operability gaps | 1.25h | replayed_at (replays out of the freshness metric), requeue-events command, partition retention with a 30-day dead archive and replay from it. |
-| **Total** | **~15h** | |
+| 12. Alerting | 0.75h | Freshness SLO recording rules and multi-window burn-rate alerts (promtool-tested, incl. recovery), Alertmanager routing with amtool tests, end-to-end alert verified on the stack. Two first-draft tests had wrong expectations (rate() on a fresh series; no history for the 3d window), fixed in the tests. |
+| **Total** | **~16h** | |
 
 ## Process
 

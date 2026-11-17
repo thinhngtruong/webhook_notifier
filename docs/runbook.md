@@ -46,3 +46,15 @@ These are events the dispatcher could not fan out, so none of their webhooks wer
    make requeue-events ARGS="--reason-prefix=received"   # the ones that kept failing
    make requeue-events ARGS="--id=evt-1,evt-2"
    ```
+
+## Freshness
+
+Alerts: `WebhookFreshnessBudgetBurnFast` and `WebhookFreshnessBudgetBurnSlow` (pages), `WebhookFreshnessBudgetBurnTicket` (ticket). SLO: 99% of small-tier first attempts within 5s of the event. The error ratio per window is recorded as `webhook:freshness_error_ratio:rate5m` … `rate3d`.
+
+1. Ours or theirs? First-attempt latency is time on our side: the event waiting to be fanned out, then the delivery waiting to be claimed. Partner response time is not in it.
+   - `webhook_input_oldest_event_age_seconds` high: ingest is behind (dispatcher or database). A whale burst shows up here first (bottlenecks.md, item 7).
+   - `webhook_oldest_due_pending_age_seconds` high with `webhook_worker_slots_in_use` at the limit: not enough workers; scale replicas.
+   - Slots in use high and `webhook_http_duration_seconds` rising: slow partners are holding workers; check `webhook_endpoint_throttled_total` and `webhook_circuit_open`.
+   - `webhook_errors_total{component="claim"}` rising: database problems in the claim loop.
+2. A trace of a late delivery (`make up-metrics`, http://localhost:16686) splits the wait: `webhook.deliver` carries `webhook.queue_wait_ms`, and the `HTTP POST` child shows the partner's share.
+3. During a whale burst, check that fairness is holding: `webhook_first_attempt_latency_seconds{tier="small"}` should stay flat while `{tier="large"}` grows.
