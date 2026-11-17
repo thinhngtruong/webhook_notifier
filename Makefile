@@ -8,7 +8,7 @@ TEST_DATABASE_URL ?= postgres://notifier:notifier@localhost:55432/notifier?sslmo
 .PHONY: up down db test test-unit lint fmt build bench
 
 up: ## build and start postgres, notifier x2, producer, partner
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up -d --build --force-recreate
 
 down:
 	$(COMPOSE) down -v

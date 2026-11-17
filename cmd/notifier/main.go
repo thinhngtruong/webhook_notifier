@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webhook-notifier/internal/config"
+	"webhook-notifier/migrations"
 )
 
 func main() {
@@ -43,6 +44,10 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	if err := migrations.Apply(ctx, pool); err != nil {
+		return err
+	}
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: healthHandler(pool), ReadHeaderTimeout: 5 * time.Second}
 	go func() {

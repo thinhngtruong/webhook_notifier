@@ -22,4 +22,4 @@ Companion to [design.md](design.md).
 
 8.  Duplicates. These come with at-least-once delivery: a worker can crash after the POST but before the ack. The lease length bounds how often it happens, and partners are told to dedupe on X-Webhook-Id.
 
-9.  Going to 10x scale. The input event queue already acts as an ingest buffer. Beyond that: fair queues held in memory and sharded by account hash (or SQS fair queues, see Fair scheduling in the design doc), with Postgres only for durable delivery state and dead letters.
+9.  Going to 10x scale. The input event queue already acts as an ingest buffer. Beyond that: fair queues held in memory and sharded by account hash (or a managed cloud queue with per-tenant fair queues, see Fair scheduling in the design doc), with Postgres only for durable delivery state and dead letters.

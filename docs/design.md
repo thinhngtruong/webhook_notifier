@@ -6,7 +6,7 @@ Stack: Go, PostgreSQL.
 
 # Context
 
-Integration partners such as Zapier register webhooks on a customer account through the existing webhook API. The Webhook Notifier is the missing piece: it listens to subscriber events, finds the webhooks that care about each one and POSTs the JSON payload to their post_url. Sending the request is easy; the hard parts are:
+Integration partners (third-party automation and CRM tools) register webhooks on a customer account through the existing webhook API. The Webhook Notifier is the missing piece: it listens to subscriber events, finds the webhooks that care about each one and POSTs the JSON payload to their post_url. Sending the request is easy; the hard parts are:
 
 - Reliability: when our own system fails or a partner has network problems, the delivery should be retried later instead of being dropped.
 
@@ -149,6 +149,10 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 - Partitioning by event_time (from the event, not insert time) keeps a redelivered event in the same partition, so the primary key still deduplicates. Old partitions are dropped, not deleted row by row.
 
+- Daily partitions (UTC) are created on demand before an insert touches a new day, under an advisory lock so replicas do not race on the DDL. There is no default partition: rows in it would block creating that day's real partition later.
+
+- attempts is incremented on every claim and doubles as the lease fencing token: acks are keyed by (id, event_time, attempts) and only apply while the row is still in_flight with that attempt. A worker whose lease was reaped (and maybe re-claimed by another worker) gets a "stale lease" result and drops its outcome. Acks always carry event_time, so they touch a single partition.
+
 ![Figure 3. Delivery states](img/delivery_states.png)
 
 *Figure 3. Delivery states*
@@ -159,7 +163,7 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 - Reads events in batches; webhook config comes from a per-account in-memory cache with a 30s TTL.
 
-- One multi-row INSERT ... ON CONFLICT (id, event_time) DO NOTHING per batch, so a re-received event creates no duplicates. Accounts are activated with an upsert that only writes when the row was inactive, so whales do not create a hot row.
+- One multi-row INSERT ... ON CONFLICT (id, event_time) DO NOTHING per batch, so a re-received event creates no duplicates. Accounts are activated with an upsert that only writes when the row was inactive, or when the new work is due before the account's current next_due_at (otherwise a new event would wait behind a retry scheduled hours later). A whale that already has due work is not rewritten, so it does not create a hot row. Only accounts that actually got new rows are touched, so a redelivered event changes nothing.
 
 - Events are acked only after the commit. A crash before that means redelivery, absorbed by the primary key. Events that keep failing go to the queue's dead-letter queue.
 
@@ -227,7 +231,11 @@ A whale with a million pending deliveries gets the same share per round as an ac
 
 - SKIP LOCKED lets many replicas claim in parallel without a leader, and locking the account rows stops two replicas from serving the same account in one round.
 
-- A replica only claims as many deliveries as it has free worker slots.
+- A replica only claims as many deliveries as it has free worker slots. It picks at most that many accounts, and when the slots are fewer than K × Q the claimed rows are interleaved (ordered by position within the account, then position in the ring) so every account gets its first delivery before any gets a second. Only accounts that received rows move to the back of the ring; the others keep their place.
+
+- In the implementation the pass is three statements in one transaction: lock the accounts, lease the deliveries (the LATERAL query above), then recompute next_due_at and active for the picked accounts.
+
+- Keeping the account ring consistent. The claim takes an account out of the ring when it leases its last pending row, while that row is still in flight. So every path that makes a row pending again activates the account in the same transaction: fan-out, a retry ack, the reaper and dead-letter replay. Each of them changes deliveries first and upserts account_queues second. If a claim holds the account row, the upsert waits for it and then re-checks against the claim's committed result (possibly active = false), so the reactivation is not lost. If the upsert holds the row, the claim skips that account for one pass. The claim never waits on a lock (SKIP LOCKED), and writers upsert accounts in account_id order, so there is no deadlock cycle. An integration test races fan-out against concurrent claimers to check this.
 
 - It extends naturally to weighted fairness: a weight column on account_queues (e.g. 1 for free, 2 for paid) and a quantum of base × weight. A premium whale still only gets its weighted share, so small accounts stay protected.
 
@@ -235,7 +243,7 @@ A whale with a million pending deliveries gets the same share per round as an ac
 |-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | One shared queue for all accounts             | No: a whale burst fills it and small accounts wait behind it.                                                                                                                                                                                                                                                                                                               |
 | A partitioned log keyed by account_id         | No: hash collisions put whales next to small accounts, and there is no delayed retry.                                                                                                                                                                                                                                                                                       |
-| SQS fair queues (MessageGroupId = account_id) | Viable build-vs-buy option on AWS: SQS serves quieter tenants first, with no scheduler code. Trade-offs: the fairness policy is a black box (no quantum or plan weights), delayed retries are limited (15min delay, 12h visibility), and delivery state cannot be queried or selectively replayed without a separate table. I build the scheduler to keep control of these. |
+| A managed cloud queue with per-tenant fair queues (message group = account_id) | Viable build-vs-buy option: the managed queue serves quieter tenants first, with no scheduler code. Trade-offs: the fairness policy is a black box (no quantum or plan weights), delayed retries are limited (short maximum delay and visibility timeout), and delivery state cannot be queried or selectively replayed without a separate table. I build the scheduler to keep control of these. |
 
 ## 4. Delivery, retries and failure handling
 
@@ -250,7 +258,7 @@ A whale with a million pending deliveries gets the same share per round as an ac
 
 - Backoff starts at 30s and triples after each failure, capped at 8h, with at most 10 attempts (about 24h). Each delay gets ±20% jitter so retries after an outage do not hit the partner as one spike. All values are configuration.
 
-- Leases last 30s, longer than the HTTP timeout. The reaper resets expired leases every 10s, so a crashed worker's deliveries are sent again.
+- Leases last 30s, longer than the HTTP timeout. The reaper resets expired leases every 10s, so a crashed worker's deliveries are sent again. The crashed attempt counts, so a delivery whose lease expires on its last allowed attempt goes to dead instead of pending.
 
 - Per-endpoint concurrency limit and circuit breaker: a slow partner holds only a few workers, and while the circuit is open deliveries are postponed without using up attempts. A retry budget (~20% of attempts) keeps failing partners from crowding out fresh traffic.
 
