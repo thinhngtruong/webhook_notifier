@@ -52,11 +52,34 @@ Work in this order. Finish each step with passing tests and a small commit befor
 8. **Fake producer and partner**, then **benchmarks**: the four scenarios in design.md section 6. The headline result is small-account p99 latency in shared-queue mode vs fair mode during a whale burst. `make bench` must print a readable table.
 9. **README**: how to run, assumptions, benchmark results, known limitations, and what I would do next.
 
+## Development workflow: TDD (mandatory)
+
+No production code without a failing test first. For every behaviour, in this order:
+
+1. **Red**: write one small test for one behaviour. Run it and watch it fail *for the expected reason* (feature missing, not a compile error or typo). A test that passes straight away tests nothing new: fix the test.
+2. **Green**: write the minimum code that makes it pass. No extra options, no speculative features.
+3. **Refactor**: clean up with the whole suite green. No new behaviour in this phase.
+4. Repeat. Commit at green when a coherent slice is done.
+
+Rules:
+
+- Bug fixes start with a test that reproduces the bug.
+- Before writing a test, name the production change that would make it fail. Concurrency and invariant tests (races, lease fencing, ring consistency) must also be shown to fail against a deliberately broken implementation (a quick mutation check) before they count.
+- Test real behaviour through public APIs. Use real Postgres for anything touching SQL; never mock the database. Fakes only at process boundaries (HTTP partner, event source, clock).
+- Inject time (`now func() time.Time`) and randomness (jitter) so unit tests are deterministic. Never `time.Sleep` to wait for an outcome in unit tests; integration tests may wait briefly on database time (lease expiry).
+- Exempt from test-first, but still verified: `Makefile`, `Dockerfile`, compose, Prometheus config (verified by `make up`), and the thin wiring in `cmd/*/main.go` (verified by a `make up` smoke check). SQL migrations are covered by the store integration tests.
+
+## Verification before commit
+
+- `make lint` (gofmt + `go vet`) and `make test` (unit + integration with `-race`) must pass, and the output must be read, not assumed. Report any failure by name.
+- If a test is skipped (e.g. no `TEST_DATABASE_URL`), it did not pass: say so.
+- Commit messages: imperative, describe the why. One step = one or more small commits, each green.
+
 ## Conventions
 
 - Small, focused packages; interfaces only where there is a second implementation or a test double.
 - Context-aware everything; graceful shutdown on SIGTERM (stop claiming, finish in-flight, release nothing that the lease will not cover).
 - Errors wrapped with `%w`; structured logs with `delivery_id`, `account_id`, `webhook_id`, `attempt`.
-- Tests: table-driven unit tests for scheduler fairness, backoff and response classification; integration tests (Postgres in Docker) for fan-out idempotency, claim fairness across concurrent replicas, retry and crash recovery.
-- Run `go vet` and `gofmt` before every commit. Commit messages: imperative, describe the why.
+- Tests: table-driven unit tests for scheduler fairness, backoff and response classification; integration tests (Postgres in Docker, one throwaway database per test via `internal/testpg`) for fan-out idempotency, claim fairness across concurrent replicas, retry and crash recovery. Test names describe the behaviour (`TestAckFencingRejectsStaleLease`), one behaviour per test.
+- Store invariant: an account with pending deliveries is active in `account_queues` with `next_due_at` <= its earliest pending `next_attempt_at`. Any code that makes a row pending must keep it; tests assert it.
 - Keep a short `NOTES.md` log of time spent per step; the reviewers ask for an estimate of total time.
