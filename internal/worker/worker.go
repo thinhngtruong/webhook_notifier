@@ -9,9 +9,15 @@ import (
 	"net/url"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/store"
+	"webhook-notifier/internal/tracing"
 )
 
 // Options configures a Worker.
@@ -55,7 +61,27 @@ func New(st *store.Store, sender *Sender, opts Options) *Worker {
 // (the reaper took the delivery back) is logged and not an error: the
 // delivery is already scheduled again.
 func (w *Worker) Process(ctx context.Context, d store.Delivery) (Outcome, error) {
+	// The attempt joins the trace of the event's fan-out span. Queue wait
+	// (event to send) and the HTTP child span split a slow delivery into
+	// time on our side and time at the partner.
+	ctx, span := tracer().Start(tracing.Extract(ctx, d.TraceContext), "webhook.deliver",
+		trace.WithAttributes(
+			attribute.String("webhook.delivery_id", d.ID.String()),
+			attribute.String("webhook.account_id", d.AccountID),
+			attribute.String("webhook.webhook_id", d.WebhookID.String()),
+			attribute.Int("webhook.attempt", d.Attempts),
+			attribute.Int64("webhook.queue_wait_ms", w.now().Sub(d.EventTime).Milliseconds()),
+		))
+	defer span.End()
+
 	outcome, cause, err := w.process(ctx, d)
+	span.SetAttributes(attribute.String("webhook.outcome", outcome.String()), attribute.String("webhook.cause", cause))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "recording the outcome failed")
+	} else if outcome == Dead || outcome == Gone {
+		span.SetStatus(codes.Error, "delivery is dead: "+cause)
+	}
 	w.metrics.Delivery(ctx, outcome.String(), cause)
 	switch outcome {
 	case Succeeded:
@@ -134,6 +160,10 @@ func (w *Worker) process(ctx context.Context, d store.Delivery) (Outcome, string
 		return outcome, cause, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), reason))
 	}
 }
+
+// tracer is looked up on each use: a package-level tracer would stay bound
+// to whichever provider was installed first.
+func tracer() trace.Tracer { return otel.Tracer("webhook-notifier/worker") }
 
 // throttleDelay is how long a delivery waits when its endpoint is at its
 // concurrency limit: short, since slots free up within one request time.

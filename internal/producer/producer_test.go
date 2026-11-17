@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/producer"
@@ -111,4 +117,45 @@ func TestSeedWebhooksIsIdempotent(t *testing.T) {
 	if hooks, _ := st.ActiveWebhooks(ctx, "account-1"); len(hooks) != 1 {
 		t.Fatalf("after seeding twice: %d webhooks, want 1", len(hooks))
 	}
+}
+
+func TestTracedAndSteadyEventsCarryTraceContext(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	e := producer.Traced(context.Background(), producer.NewEvent("e1", "account-1", "small", time.Now()))
+	spans := rec.Ended()
+	if len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindProducer {
+		t.Fatalf("spans = %d", len(spans))
+	}
+	if !strings.Contains(e.TraceContext, spans[0].SpanContext().SpanID().String()) {
+		t.Fatalf("trace context %q does not point at the producer span", e.TraceContext)
+	}
+
+	pub := &capturePub{}
+	if _, err := producer.Steady(context.Background(), pub, 1000, 50*time.Millisecond, []string{"a"}, func(string) string { return "small" }); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.events) == 0 {
+		t.Fatal("nothing published")
+	}
+	for _, e := range pub.events {
+		if e.TraceContext == "" {
+			t.Fatalf("steady event %s has no trace context", e.ID)
+		}
+	}
+}
+
+type capturePub struct {
+	mu     sync.Mutex
+	events []event.Event
+}
+
+func (c *capturePub) Publish(_ context.Context, es ...event.Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, es...)
+	return nil
 }

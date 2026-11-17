@@ -15,7 +15,8 @@ Time spent per step (for the total estimate).
 | 8b. Dead-letter metric + alerts | 0.5h | webhook_dead_deliveries gauge, three ticket-level DLQ alerts unit-tested with promtool (mutation-checked), runbook. |
 | 9b. Input dead-letter queue | 0.75h | Receive limit + explicit dead-lettering of malformed events, gauges, page alert (promtool-tested), runbook. Found and fixed: a zero event time made fan-out create a partition per day back to year 1 (62,160 partitions before the test was stopped). |
 | 9. README | 0.5h | How to run, assumptions, benchmark results, limitations, next steps. |
-| **Total** | **~13h** | |
+| 10. Tracing | 1h | W3C trace context on queue and delivery rows; producer, fan-out, deliver and HTTP spans; parent-based ratio sampling; OTLP to a local trace viewer. Found: a package-level tracer stays bound to the first provider installed. |
+| **Total** | **~14h** | |
 
 ## Process
 

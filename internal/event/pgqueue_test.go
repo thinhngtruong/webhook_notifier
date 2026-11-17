@@ -167,3 +167,19 @@ func TestPGQueueDeadLetterAndStats(t *testing.T) {
 		t.Fatalf("dead-letter stats = %+v, %v; want 2, oldest ~20s", s, err)
 	}
 }
+
+func TestPGQueueCarriesTraceContext(t *testing.T) {
+	q := event.NewPGQueue(testpg.New(t), time.Minute, 5)
+	ctx := context.Background()
+	e := pgEvent("e1")
+	e.TraceContext = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	q.Publish(ctx, e, pgEvent("e2"))
+	got, _ := q.Receive(ctx, 10)
+	by := map[string]string{}
+	for _, g := range got {
+		by[g.ID] = g.TraceContext
+	}
+	if by["e1"] != e.TraceContext || by["e2"] != "" {
+		t.Fatalf("trace contexts = %v", by)
+	}
+}

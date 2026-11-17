@@ -11,6 +11,10 @@ x-notifier: &notifier
     # keeps both checks on (HTTPS only, no internal addresses).
     ALLOW_HTTP: "true"
     ALLOW_PRIVATE_NETWORKS: "true"
+    # Traces go to the trace viewer in the metrics profile (make up-metrics).
+    # Without it the exporter fails quietly (one warning a minute).
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    OTEL_TRACES_SAMPLER_ARG: "1"
   depends_on:
     postgres:
       condition: service_healthy
@@ -52,6 +56,8 @@ services:
       DATABASE_URL: postgres://notifier:notifier@postgres:5432/notifier?sslmode=disable
       PARTNER_URL: http://partner:9090
       WEBHOOK_SECRET: local-secret
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_TRACES_SAMPLER_ARG: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,6 +79,11 @@ services:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports: ["9091:9090"]
+
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    profiles: ["metrics"]
+    ports: ["16686:16686"] # trace UI; OTLP/HTTP on 4318 inside the network
 
 volumes:
   pgdata:

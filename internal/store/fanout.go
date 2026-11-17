@@ -44,6 +44,8 @@ type NewDelivery struct {
 	AccountID string
 	WebhookID UUID
 	Payload   []byte // JSON
+	// TraceContext (W3C traceparent) links attempts to the fan-out span.
+	TraceContext string
 }
 
 // FanOut inserts the deliveries and activates their accounts in one
@@ -63,6 +65,7 @@ func (s *Store) FanOut(ctx context.Context, ds []NewDelivery) (int64, error) {
 		eventIDs   = make([]string, len(ds))
 		eventNames = make([]string, len(ds))
 		payloads   = make([]string, len(ds))
+		traces     = make([]string, len(ds))
 		minDay     = ds[0].EventTime
 		maxDay     = ds[0].EventTime
 	)
@@ -74,6 +77,7 @@ func (s *Store) FanOut(ctx context.Context, ds []NewDelivery) (int64, error) {
 		eventIDs[i] = d.EventID
 		eventNames[i] = d.EventName
 		payloads[i] = string(d.Payload)
+		traces[i] = d.TraceContext
 		if d.EventTime.Before(minDay) {
 			minDay = d.EventTime
 		}
@@ -88,17 +92,17 @@ func (s *Store) FanOut(ctx context.Context, ds []NewDelivery) (int64, error) {
 	// One statement: the insert CTE runs first, the activation reads its
 	// RETURNING rows, so only accounts that got new rows are touched.
 	sql := `WITH ins AS (
-		INSERT INTO deliveries (id, event_time, account_id, webhook_id, event_id, event_name, payload)
-		SELECT id, event_time, account_id, webhook_id, event_id, event_name, payload::jsonb
-		  FROM unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::uuid[], $5::text[], $6::text[], $7::text[])
-		       AS t(id, event_time, account_id, webhook_id, event_id, event_name, payload)
+		INSERT INTO deliveries (id, event_time, account_id, webhook_id, event_id, event_name, payload, trace_context)
+		SELECT id, event_time, account_id, webhook_id, event_id, event_name, payload::jsonb, NULLIF(trace_context, '')
+		  FROM unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::uuid[], $5::text[], $6::text[], $7::text[], $8::text[])
+		       AS t(id, event_time, account_id, webhook_id, event_id, event_name, payload, trace_context)
 		ON CONFLICT (id, event_time) DO NOTHING
 		RETURNING account_id, next_attempt_at
 	), act AS (` + activateSQL(`SELECT account_id, next_attempt_at AS due FROM ins`) + `)
 	SELECT count(*) FROM ins`
 
 	var inserted int64
-	err := s.pool.QueryRow(ctx, sql, ids, eventTimes, accounts, webhooks, eventIDs, eventNames, payloads).Scan(&inserted)
+	err := s.pool.QueryRow(ctx, sql, ids, eventTimes, accounts, webhooks, eventIDs, eventNames, payloads, traces).Scan(&inserted)
 	if err != nil {
 		return 0, fmt.Errorf("fan out %d deliveries: %w", len(ds), err)
 	}

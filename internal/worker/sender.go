@@ -12,6 +12,11 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Request is one signed POST to a partner.
@@ -125,6 +130,17 @@ func (s *Sender) Send(ctx context.Context, r Request) (Response, error) {
 	default:
 		return Response{}, fmt.Errorf("%w: unsupported scheme %q", ErrBlockedTarget, req.URL.Scheme)
 	}
+	ctx, span := tracer().Start(ctx, "HTTP POST", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("http.request.method", http.MethodPost),
+			attribute.String("server.address", req.URL.Hostname()),
+			attribute.String("url.scheme", req.URL.Scheme),
+		))
+	defer span.End()
+	req = req.WithContext(ctx)
+	// Partners that trace can join the trace; they can ignore the header.
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
+
 	ts := s.now().Unix()
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "webhook-notifier/1.0")
@@ -135,7 +151,13 @@ func (s *Sender) Send(ctx context.Context, r Request) (Response, error) {
 	start := time.Now()
 	resp, err := s.client.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "request failed")
 		return Response{Duration: time.Since(start)}, err
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if resp.StatusCode >= 400 {
+		span.SetStatus(codes.Error, resp.Status)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrain))

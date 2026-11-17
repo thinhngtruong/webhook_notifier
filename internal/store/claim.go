@@ -149,7 +149,7 @@ func scanClaimed(r pgx.CollectableRow) (Delivery, error) {
 	var url, secret, status *string
 	err := r.Scan(&d.ID, &d.EventTime, &d.AccountID, &d.WebhookID, &d.EventID, &d.EventName,
 		&d.Payload, &d.Status, &d.Attempts, &d.NextAttemptAt, &d.LeaseUntil,
-		&d.LastError, &d.DeliveredAt, &url, &secret, &status)
+		&d.LastError, &d.DeliveredAt, &d.TraceContext, &url, &secret, &status)
 	if err == nil && url != nil {
 		d.Target = &Target{URL: *url, Secret: *secret, Active: *status == "active"}
 	}
@@ -233,7 +233,7 @@ func (s *Store) ClaimShared(ctx context.Context, limit int, lease time.Duration)
 // webhook's URL, secret and status (NULL when the webhook row is gone).
 const claimReturning = `RETURNING d.id, d.event_time, d.account_id, d.webhook_id, d.event_id, d.event_name,
 		          d.payload, d.status, d.attempts, d.next_attempt_at, d.lease_until,
-		          d.last_error, d.delivered_at,
+		          d.last_error, d.delivered_at, COALESCE(d.trace_context, ''),
 		          (SELECT w.post_url FROM webhooks w WHERE w.id = d.webhook_id),
 		          (SELECT w.secret   FROM webhooks w WHERE w.id = d.webhook_id),
 		          (SELECT w.status   FROM webhooks w WHERE w.id = d.webhook_id)`

@@ -3,7 +3,7 @@
 Proof of concept for a webhook delivery service. It consumes subscriber events, fans each one out to the webhooks registered on the account, and POSTs a signed payload to each webhook's `post_url`: at least once, with retries, and fairly across accounts, so a burst from one huge account does not delay everyone else.
 
 - Design: [docs/design.md](docs/design.md). Scaling limits: [docs/bottlenecks.md](docs/bottlenecks.md). Operations: [docs/runbook.md](docs/runbook.md).
-- Stack: Go 1.27 and PostgreSQL 16. Dependencies: `pgx/v5`, OpenTelemetry (metrics, exported in Prometheus format), and the standard library.
+- Stack: Go 1.27 and PostgreSQL 16. Dependencies: `pgx/v5`, OpenTelemetry (metrics exported in Prometheus format, traces over OTLP), and the standard library.
 
 ## Run it
 
@@ -11,7 +11,7 @@ Needs Docker. Go 1.27 is only needed for tests and benchmarks on the host.
 
 ```sh
 make up          # postgres, 2 notifier replicas, fake producer (20 events/s), fake partner
-make up-metrics  # the same plus Prometheus on http://localhost:9091 (alert rules loaded)
+make up-metrics  # the same plus Prometheus (:9091, alert rules loaded) and the trace viewer (:16686)
 make down        # stop and delete the data volume
 ```
 
@@ -21,6 +21,7 @@ make down        # stop and delete the data volume
 | Fake partner: what it received (latency by tier, duplicates, bad signatures) | http://localhost:9090/stats |
 | Fail a partner endpoint for a while | `curl -X POST 'localhost:9090/admin/outage?endpoint=account-00001&for=2m'` |
 | Prometheus (with `make up-metrics`) | http://localhost:9091 |
+| Traces: event → fan-out → attempt → HTTP call (with `make up-metrics`) | http://localhost:16686 |
 | Postgres | `localhost:55432`, user/password/db `notifier` |
 
 Other commands:
@@ -74,7 +75,7 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, distributed tracing, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a command to requeue input dead letters (the runbook has the SQL), and batched acks.
+- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a command to requeue input dead letters (the runbook has the SQL), and batched acks.
 - A replayed delivery restarts at attempt 1 and is counted as a "first attempt" with its old event time, which skews the freshness metric.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
@@ -82,10 +83,10 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 
 1. Fair ingest: consume the event queue per account (or partitioned by account), so a burst cannot delay other accounts before fan-out.
 2. Let several replicas serve one busy account (split a whale into sub-queues), closing the remaining whale gap.
-3. Tracing (OpenTelemetry spans from event to HTTP attempt, with the trace context stored on the delivery row), then the SLO burn-rate alerts and Alertmanager routing from the design.
+3. The SLO burn-rate alerts and Alertmanager routing from the design.
 4. Partition retention (drop daily partitions after 7 days, keeping dead rows for 30), and batched acks to cut write load.
 5. Run the full-size benchmark on production-like hardware and tune quantum, accounts per tick and pool sizes from the results.
 
 ## Time spent
 
-About 13 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
+About 14 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.

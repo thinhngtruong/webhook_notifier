@@ -355,6 +355,8 @@ Implementation notes (PoC):
 
 - Trace context is carried from the event through fan-out, claim and the HTTP call, so a slow delivery can be split into time waiting in the queue and time spent at the partner.
 
+- In the PoC (OpenTelemetry, OTLP/HTTP to a local trace viewer with `make up-metrics`, UI on :16686): the event carries a W3C traceparent (the producer's `subscriber.event` span); the dispatcher starts one `webhook.fanout` span per event as its child and stores that context on each delivery row; every attempt is a `webhook.deliver` span (delivery, account, webhook, attempt, outcome, cause, and `webhook.queue_wait_ms` from event to send) with an `HTTP POST` client child span. The traceparent is also sent to partners. Root spans are sampled at OTEL_TRACES_SAMPLER_ARG and everything else follows its parent, so a trace is kept or dropped end to end. Claim passes are not traced per delivery: one claim leases many deliveries, and queue wait already covers the time spent waiting.
+
 ### Alerting
 
 Alerts fire on SLO burn rate rather than fixed thresholds, using a long and a short window so they trigger fast on real incidents and stop quickly once the issue is fixed.

@@ -8,8 +8,13 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/store"
+	"webhook-notifier/internal/tracing"
 )
 
 // WhaleAccount is the account ID the whale burst uses.
@@ -54,13 +59,13 @@ func WhaleBurst(whaleEvents, smallAccounts, smallEvents int, at time.Time) Burst
 		SmallAccounts: make([]string, smallAccounts),
 	}
 	for i := range b.Whale {
-		b.Whale[i] = NewEvent(fmt.Sprintf("whale-%d", i), WhaleAccount, "large", at)
+		b.Whale[i] = Traced(context.Background(), NewEvent(fmt.Sprintf("whale-%d", i), WhaleAccount, "large", at))
 	}
 	for a := range smallAccounts {
 		account := SmallAccount(a)
 		b.SmallAccounts[a] = account
 		for i := range smallEvents {
-			b.Small = append(b.Small, NewEvent(fmt.Sprintf("%s-%d", account, i), account, "small", at))
+			b.Small = append(b.Small, Traced(context.Background(), NewEvent(fmt.Sprintf("%s-%d", account, i), account, "small", at)))
 		}
 	}
 	return b
@@ -90,7 +95,7 @@ func Steady(ctx context.Context, pub Publisher, rate int, d time.Duration, accou
 			batch := make([]event.Event, due)
 			for i := range batch {
 				account := accounts[next%len(accounts)]
-				batch[i] = NewEvent(fmt.Sprintf("steady-%d-%d", start.UnixNano(), published+i), account, tier(account), now)
+				batch[i] = Traced(ctx, NewEvent(fmt.Sprintf("steady-%d-%d", start.UnixNano(), published+i), account, tier(account), now))
 				next++
 			}
 			if err := pub.Publish(ctx, batch...); err != nil {
@@ -124,4 +129,21 @@ func SeedWebhooks(ctx context.Context, st *store.Store, accounts []string, urlFo
 		}
 	}
 	return nil
+}
+
+// Traced starts and ends a producer span for e (the platform would do this
+// when the event happens) and stores its context on the event, so the
+// notifier's spans join the event's trace.
+func Traced(ctx context.Context, e event.Event) event.Event {
+	ctx, span := otel.Tracer("webhook-notifier/producer").Start(ctx, "subscriber.event",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithTimestamp(e.Time),
+		trace.WithAttributes(
+			attribute.String("webhook.event_id", e.ID),
+			attribute.String("webhook.event_name", e.Name),
+			attribute.String("webhook.account_id", e.AccountID),
+		))
+	span.End()
+	e.TraceContext = tracing.Inject(ctx)
+	return e
 }

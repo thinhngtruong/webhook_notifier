@@ -7,7 +7,7 @@ Proof of concept for a webhook delivery service: it consumes subscriber events, 
 ## Hard rules
 
 - Never mention any real company or product brand in code, comments, docs, commit messages or test data. Use neutral names (`webhook-notifier`, `acme`, `account-123`).
-- Stack: Go 1.27 (go.mod pins 1.27.4) and PostgreSQL 16. Keep dependencies few: `pgx/v5` for Postgres, OpenTelemetry for metrics (`go.opentelemetry.io/otel` API + `sdk/metric`, exported on `/metrics` through `exporters/prometheus`, with `prometheus/client_golang` only for the HTTP handler), the standard library for HTTP and logging (`log/slog`). Ask before adding anything else.
+- Stack: Go 1.27 (go.mod pins 1.27.4) and PostgreSQL 16. Keep dependencies few: `pgx/v5` for Postgres, OpenTelemetry for metrics and traces (`go.opentelemetry.io/otel` API + `sdk/metric`, exported on `/metrics` through `exporters/prometheus`, with `prometheus/client_golang` only for the HTTP handler; `sdk` + `exporters/otlp/otlptrace/otlptracehttp` for traces), the standard library for HTTP and logging (`log/slog`). Ask before adding anything else.
 - Semantics: at-least-once delivery, no ordering guarantees. Do not add ordering or exactly-once machinery.
 - Everything must run locally with one command (`make up`) and no cloud accounts.
 

@@ -853,3 +853,25 @@ func TestFanOutRefusesAbsurdEventTimeSpans(t *testing.T) {
 		t.Fatalf("%d partitions created", parts)
 	}
 }
+
+func TestClaimReturnsTraceContext(t *testing.T) {
+	e := newEnv(t)
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	ds := e.events("account-1", "e", 2, now)
+	ds[0].TraceContext = tp
+	e.fanOut(ds)
+	got := map[string]string{}
+	for _, d := range e.claim(store.ClaimParams{Accounts: 1, Quantum: 1, Limit: 1}) {
+		got[d.EventID] = d.TraceContext
+	}
+	shared, err := e.s.ClaimShared(e.ctx, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range shared {
+		got[d.EventID] = d.TraceContext
+	}
+	if got["e-0"] != tp || got["e-1"] != "" || len(got) != 2 {
+		t.Fatalf("trace contexts = %v", got)
+	}
+}

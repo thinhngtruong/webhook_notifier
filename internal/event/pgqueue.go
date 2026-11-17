@@ -37,16 +37,18 @@ func (q *PGQueue) Publish(ctx context.Context, events ...Event) error {
 		accounts = make([]string, len(events))
 		times    = make([]time.Time, len(events))
 		payloads = make([]string, len(events))
+		traces   = make([]string, len(events))
 	)
 	for i, e := range events {
 		ids[i], names[i], accounts[i], times[i], payloads[i] = e.ID, e.Name, e.AccountID, e.Time, string(e.Payload)
+		traces[i] = e.TraceContext
 	}
 	_, err := q.pool.Exec(ctx, `
-		INSERT INTO events_queue (id, name, account_id, event_time, payload)
-		SELECT id, name, account_id, event_time, payload::jsonb
-		  FROM unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[], $5::text[])
-		       AS t(id, name, account_id, event_time, payload)
-		ON CONFLICT (id) DO NOTHING`, ids, names, accounts, times, payloads)
+		INSERT INTO events_queue (id, name, account_id, event_time, payload, trace_context)
+		SELECT id, name, account_id, event_time, payload::jsonb, NULLIF(trace_context, '')
+		  FROM unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[], $5::text[], $6::text[])
+		       AS t(id, name, account_id, event_time, payload, trace_context)
+		ON CONFLICT (id) DO NOTHING`, ids, names, accounts, times, payloads, traces)
 	if err != nil {
 		return fmt.Errorf("publish %d events: %w", len(events), err)
 	}
@@ -65,11 +67,11 @@ func (q *PGQueue) Receive(ctx context.Context, max int) ([]Event, error) {
 			               ORDER BY visible_at
 			               LIMIT 100
 			               FOR UPDATE SKIP LOCKED)
-			RETURNING id, name, account_id, event_time, payload, receive_count
+			RETURNING id, name, account_id, event_time, payload, receive_count, trace_context
 		)
-		INSERT INTO events_dead_letters (id, name, account_id, event_time, payload, receive_count, reason)
+		INSERT INTO events_dead_letters (id, name, account_id, event_time, payload, receive_count, reason, trace_context)
 		SELECT id, name, account_id, event_time, payload, receive_count,
-		       'received ' || receive_count || ' times without an ack'
+		       'received ' || receive_count || ' times without an ack', trace_context
 		  FROM dead
 		ON CONFLICT (id) DO NOTHING`, q.maxReceives); err != nil {
 		return nil, fmt.Errorf("dead-letter exhausted events: %w", err)
@@ -84,13 +86,13 @@ func (q *PGQueue) Receive(ctx context.Context, max int) ([]Event, error) {
 		         LIMIT $1
 		         FOR UPDATE SKIP LOCKED) due
 		 WHERE e.id = due.id
-		RETURNING e.id, e.name, e.account_id, e.event_time, e.payload`, max, q.visibility.Seconds(), q.maxReceives)
+		RETURNING e.id, e.name, e.account_id, e.event_time, e.payload, COALESCE(e.trace_context, '')`, max, q.visibility.Seconds(), q.maxReceives)
 	if err != nil {
 		return nil, fmt.Errorf("receive events: %w", err)
 	}
 	events, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Event, error) {
 		var e Event
-		err := r.Scan(&e.ID, &e.Name, &e.AccountID, &e.Time, &e.Payload)
+		err := r.Scan(&e.ID, &e.Name, &e.AccountID, &e.Time, &e.Payload, &e.TraceContext)
 		return e, err
 	})
 	if err != nil {
@@ -135,10 +137,10 @@ func (q *PGQueue) DeadLetter(ctx context.Context, id, reason string) error {
 	_, err := q.pool.Exec(ctx, `
 		WITH dead AS (
 			DELETE FROM events_queue WHERE id = $1
-			RETURNING id, name, account_id, event_time, payload, receive_count
+			RETURNING id, name, account_id, event_time, payload, receive_count, trace_context
 		)
-		INSERT INTO events_dead_letters (id, name, account_id, event_time, payload, receive_count, reason)
-		SELECT id, name, account_id, event_time, payload, receive_count, $2 FROM dead
+		INSERT INTO events_dead_letters (id, name, account_id, event_time, payload, receive_count, reason, trace_context)
+		SELECT id, name, account_id, event_time, payload, receive_count, $2, trace_context FROM dead
 		ON CONFLICT (id) DO NOTHING`, id, reason)
 	if err != nil {
 		return fmt.Errorf("dead-letter event %s: %w", id, err)

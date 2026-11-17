@@ -26,6 +26,7 @@ import (
 	"webhook-notifier/internal/replay"
 	"webhook-notifier/internal/scheduler"
 	"webhook-notifier/internal/store"
+	"webhook-notifier/internal/tracing"
 	"webhook-notifier/internal/worker"
 	"webhook-notifier/migrations"
 )
@@ -73,6 +74,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	shutdownTracing, tracingOn, err := tracing.Setup(ctx, "webhook-notifier", os.Getenv)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(flushCtx)
+	}()
+
 	pool, err := connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -105,7 +116,8 @@ func run() error {
 	}()
 
 	slog.Info("notifier started",
-		"dispatcher", cfg.Dispatcher, "worker", cfg.Worker, "reaper", cfg.Reaper, "http_addr", cfg.HTTPAddr)
+		"dispatcher", cfg.Dispatcher, "worker", cfg.Worker, "reaper", cfg.Reaper, "http_addr", cfg.HTTPAddr,
+		"tracing", tracingOn)
 	// Roles run until ctx is cancelled; Wait returns once each has finished
 	// its in-flight work.
 	var roles sync.WaitGroup

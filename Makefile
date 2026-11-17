@@ -47,5 +47,5 @@ bench: db ## run the four benchmark scenarios and print a report
 replay: ## replay dead deliveries, e.g. make replay ARGS="--account=account-123"
 	$(COMPOSE) exec -T notifier-1 notifier replay $(ARGS)
 
-up-metrics: ## make up plus Prometheus on http://localhost:9091
+up-metrics: ## make up plus Prometheus (:9091) and the trace viewer (:16686)
 	$(COMPOSE) --profile metrics up -d --build --force-recreate

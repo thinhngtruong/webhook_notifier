@@ -10,10 +10,20 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/store"
+	"webhook-notifier/internal/tracing"
 )
+
+// tracer is looked up on each use: a package-level tracer would stay bound
+// to whichever provider was installed first.
+func tracer() trace.Tracer { return otel.Tracer("webhook-notifier/dispatcher") }
 
 // Store is the part of store.Store the dispatcher writes to.
 type Store interface {
@@ -62,20 +72,38 @@ func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 			continue
 		}
 		ids = append(ids, e.ID)
+		// One span per event, joining the event's trace when it has one.
+		// Its context is stored on each delivery so attempts become its
+		// children.
+		_, span := tracer().Start(tracing.Extract(ctx, e.TraceContext), "webhook.fanout",
+			trace.WithAttributes(
+				attribute.String("webhook.event_id", e.ID),
+				attribute.String("webhook.event_name", e.Name),
+				attribute.String("webhook.account_id", e.AccountID),
+			))
+		spanCtx := trace.ContextWithSpan(ctx, span)
 		hooks, err := d.hooks.Get(ctx, e.AccountID)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "webhook lookup failed")
+			span.End()
 			d.metrics.Error(ctx, "webhook_lookup")
 			return 0, fmt.Errorf("webhooks for %s: %w", e.AccountID, err)
 		}
+		matched := 0
 		for _, h := range hooks {
 			if !h.Subscribes(e.Name) {
 				continue
 			}
+			matched++
 			deliveries = append(deliveries, store.NewDelivery{
 				EventID: e.ID, EventName: e.Name, EventTime: e.Time,
 				AccountID: e.AccountID, WebhookID: h.ID, Payload: e.Payload,
+				TraceContext: tracing.Inject(spanCtx),
 			})
 		}
+		span.SetAttributes(attribute.Int("webhook.deliveries", matched))
+		span.End()
 	}
 
 	if len(ids) == 0 {

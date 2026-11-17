@@ -14,6 +14,9 @@ type Event struct {
 	AccountID string
 	Time      time.Time // when the event happened; drives partitioning and latency
 	Payload   []byte    // JSON body POSTed to partners
+	// TraceContext is the W3C traceparent of the span that produced the
+	// event, if any; deliveries' spans join that trace.
+	TraceContext string
 }
 
 // Source is an at-least-once event queue. Received events that are not
