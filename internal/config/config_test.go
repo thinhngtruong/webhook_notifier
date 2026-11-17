@@ -72,3 +72,20 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatcherSettings(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DispatchBatchSize != 500 || c.WebhookCacheTTL != 30*time.Second {
+		t.Errorf("defaults = batch %d ttl %v; want 500, 30s", c.DispatchBatchSize, c.WebhookCacheTTL)
+	}
+	c, err = Load([]string{"--dispatch-batch=50"}, env(map[string]string{"WEBHOOK_CACHE_TTL": "5s"}))
+	if err != nil || c.DispatchBatchSize != 50 || c.WebhookCacheTTL != 5*time.Second {
+		t.Errorf("overrides = %d %v, %v", c.DispatchBatchSize, c.WebhookCacheTTL, err)
+	}
+	if _, err := Load([]string{"--dispatch-batch=0"}, env(nil)); err == nil || !strings.Contains(err.Error(), "dispatch batch") {
+		t.Errorf("zero batch: err = %v", err)
+	}
+}

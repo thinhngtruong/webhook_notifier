@@ -6,6 +6,7 @@ Time spent per step (for the total estimate).
 |------|------|-------|
 | 1. Skeleton | 0.5h | Module, config, compose, Makefile. Local Go upgraded to 1.27 via Homebrew. |
 | 2. Schema and store | 1.5h | Migrations, partitions, fan-out, fair claim, fenced acks, reaper, replay. 16 tests. |
+| 3. Dispatcher | 0.75h | EventSource + in-memory queue, TTL webhook cache, fan-out batch, run loop. Test-first; behaviour already covered by earlier code was mutation-checked instead. |
 
 ## Process
 

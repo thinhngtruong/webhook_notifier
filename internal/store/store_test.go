@@ -640,3 +640,13 @@ func TestReaperResetsExpiredLeasesAndKillsExhausted(t *testing.T) {
 		t.Fatal("account with only dead/in-flight rows should not be reactivated")
 	}
 }
+
+// A source may hand the same event to the dispatcher twice in one batch;
+// the single INSERT must absorb the duplicate instead of failing.
+func TestFanOutAbsorbsDuplicatesWithinOneBatch(t *testing.T) {
+	e := newEnv(t)
+	ds := e.events("account-1", "evt", 1, now)
+	if n := e.fanOut(append(ds, ds[0])); n != 1 {
+		t.Fatalf("inserted %d, want 1", n)
+	}
+}

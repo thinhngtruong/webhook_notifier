@@ -22,6 +22,10 @@ type Config struct {
 	Worker     bool
 	Reaper     bool
 
+	// Dispatcher.
+	DispatchBatchSize int           // events per fan-out transaction
+	WebhookCacheTTL   time.Duration // per-account webhook cache
+
 	// Fair scheduler.
 	AccountsPerTick int           // K: accounts picked per claim pass
 	Quantum         int           // Q: max deliveries per account per pass
@@ -46,20 +50,22 @@ type Config struct {
 // Default returns the configuration described in docs/design.md.
 func Default() Config {
 	return Config{
-		DatabaseURL:     "postgres://notifier:notifier@localhost:5432/notifier?sslmode=disable",
-		HTTPAddr:        ":8080",
-		AccountsPerTick: 50,
-		Quantum:         10,
-		Workers:         64,
-		ClaimInterval:   100 * time.Millisecond,
-		LeaseDuration:   30 * time.Second,
-		BackoffBase:     30 * time.Second,
-		BackoffFactor:   3,
-		BackoffMax:      8 * time.Hour,
-		MaxAttempts:     10,
-		JitterRatio:     0.2,
-		HTTPTimeout:     10 * time.Second,
-		ReaperInterval:  10 * time.Second,
+		DatabaseURL:       "postgres://notifier:notifier@localhost:5432/notifier?sslmode=disable",
+		HTTPAddr:          ":8080",
+		DispatchBatchSize: 500,
+		WebhookCacheTTL:   30 * time.Second,
+		AccountsPerTick:   50,
+		Quantum:           10,
+		Workers:           64,
+		ClaimInterval:     100 * time.Millisecond,
+		LeaseDuration:     30 * time.Second,
+		BackoffBase:       30 * time.Second,
+		BackoffFactor:     3,
+		BackoffMax:        8 * time.Hour,
+		MaxAttempts:       10,
+		JitterRatio:       0.2,
+		HTTPTimeout:       10 * time.Second,
+		ReaperInterval:    10 * time.Second,
 	}
 }
 
@@ -77,6 +83,8 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.BoolVar(&c.Dispatcher, "dispatcher", c.Dispatcher, "run the dispatcher role")
 	fs.BoolVar(&c.Worker, "worker", c.Worker, "run the claim loop and worker pool")
 	fs.BoolVar(&c.Reaper, "reaper", c.Reaper, "run the lease reaper")
+	fs.IntVar(&c.DispatchBatchSize, "dispatch-batch", c.DispatchBatchSize, "events per fan-out transaction (DISPATCH_BATCH_SIZE)")
+	fs.DurationVar(&c.WebhookCacheTTL, "webhook-cache-ttl", c.WebhookCacheTTL, "per-account webhook cache TTL (WEBHOOK_CACHE_TTL)")
 	fs.IntVar(&c.AccountsPerTick, "accounts-per-tick", c.AccountsPerTick, "accounts picked per claim pass (ACCOUNTS_PER_TICK)")
 	fs.IntVar(&c.Quantum, "quantum", c.Quantum, "max deliveries per account per pass (QUANTUM)")
 	fs.IntVar(&c.Workers, "workers", c.Workers, "worker pool size (WORKERS)")
@@ -157,6 +165,8 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	boolean("ROLE_DISPATCHER", &c.Dispatcher)
 	boolean("ROLE_WORKER", &c.Worker)
 	boolean("ROLE_REAPER", &c.Reaper)
+	integer("DISPATCH_BATCH_SIZE", &c.DispatchBatchSize)
+	duration("WEBHOOK_CACHE_TTL", &c.WebhookCacheTTL)
 	integer("ACCOUNTS_PER_TICK", &c.AccountsPerTick)
 	integer("QUANTUM", &c.Quantum)
 	integer("WORKERS", &c.Workers)
@@ -186,6 +196,8 @@ func (c Config) Validate() error {
 		}
 	}
 	check(c.DatabaseURL != "", "database URL is required")
+	check(c.DispatchBatchSize > 0, "dispatch batch size must be > 0")
+	check(c.WebhookCacheTTL > 0, "webhook cache TTL must be > 0")
 	check(c.AccountsPerTick > 0, "accounts per tick must be > 0")
 	check(c.Quantum > 0, "quantum must be > 0")
 	check(c.Workers > 0, "workers must be > 0")

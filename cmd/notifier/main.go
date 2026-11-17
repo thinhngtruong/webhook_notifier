@@ -59,7 +59,12 @@ func run() error {
 
 	slog.Info("notifier started",
 		"dispatcher", cfg.Dispatcher, "worker", cfg.Worker, "reaper", cfg.Reaper, "http_addr", cfg.HTTPAddr)
-	for role, on := range map[string]bool{"dispatcher": cfg.Dispatcher, "worker": cfg.Worker, "reaper": cfg.Reaper} {
+	if cfg.Dispatcher {
+		// The dispatcher needs an event source shared with the producer process;
+		// the Postgres-backed queue arrives with the producer (step 8).
+		slog.Warn("dispatcher role idle: no cross-process event source yet")
+	}
+	for role, on := range map[string]bool{"worker": cfg.Worker, "reaper": cfg.Reaper} {
 		if on {
 			slog.Warn("role not implemented yet", "role", role)
 		}
