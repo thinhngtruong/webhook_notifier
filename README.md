@@ -30,6 +30,7 @@ Other commands:
 make test        # unit + integration tests (real Postgres in Docker, -race), alert rule tests
 make bench       # the four benchmark scenarios, about 4 minutes; BENCH_SCALE=quick|default|full
 make replay ARGS="--account=account-123"   # replay dead deliveries (see docs/runbook.md)
+make requeue-events ARGS="--reason-prefix=received"   # requeue input dead letters
 make lint        # gofmt + go vet
 ```
 
@@ -75,7 +76,7 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a command to requeue input dead letters (the runbook has the SQL), and batched acks.
+- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), and batched acks.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
 ## What I would do next

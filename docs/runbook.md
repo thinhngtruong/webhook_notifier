@@ -38,13 +38,8 @@ These are events the dispatcher could not fan out, so none of their webhooks wer
      FROM events_dead_letters GROUP BY reason ORDER BY 2 DESC;
    ```
 2. Malformed events: fix the producer side; the event itself usually cannot be repaired here. Failing repeatedly: check `webhook_errors_total{component=~"fanout|webhook_lookup"}` and the dispatcher logs for the database error.
-3. Requeue once the cause is fixed. The deliveries primary key makes this safe if an event was partly fanned out before:
-   ```sql
-   BEGIN;
-   INSERT INTO events_queue (id, name, account_id, event_time, payload)
-   SELECT id, name, account_id, event_time, payload FROM events_dead_letters
-    WHERE reason LIKE 'received %'          -- or: WHERE id = ANY('{...}')
-   ON CONFLICT (id) DO NOTHING;
-   DELETE FROM events_dead_letters WHERE reason LIKE 'received %';
-   COMMIT;
+3. Requeue once the cause is fixed. Requeued events get a fresh receive count; the deliveries primary key makes this safe if an event was partly fanned out before. An empty filter is refused unless `--all` is passed:
+   ```sh
+   make requeue-events ARGS="--reason-prefix=received"   # the ones that kept failing
+   make requeue-events ARGS="--id=evt-1,evt-2"
    ```

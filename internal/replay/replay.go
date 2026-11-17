@@ -8,8 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/store"
 )
 
@@ -74,5 +76,51 @@ func Run(ctx context.Context, st *store.Store, args []string, out io.Writer) err
 		return err
 	}
 	_, err = fmt.Fprintf(out, "replayed %d dead deliveries\n", n)
+	return err
+}
+
+// Requeuer puts input dead letters back on the event queue.
+type Requeuer interface {
+	Requeue(ctx context.Context, f event.RequeueFilter) (int64, error)
+}
+
+// ParseRequeueFlags parses requeue-events arguments. Like replay, an empty
+// filter needs an explicit --all.
+func ParseRequeueFlags(args []string) (event.RequeueFilter, error) {
+	var (
+		f   event.RequeueFilter
+		ids string
+		all bool
+		fs  = flag.NewFlagSet("requeue-events", flag.ContinueOnError)
+	)
+	fs.StringVar(&ids, "id", "", "comma-separated event IDs")
+	fs.StringVar(&f.ReasonPrefix, "reason-prefix", "", `only dead letters whose reason starts with this ("received", "malformed")`)
+	fs.BoolVar(&all, "all", false, "allow requeueing with no filter")
+	if err := fs.Parse(args); err != nil {
+		return event.RequeueFilter{}, err
+	}
+	for _, id := range strings.Split(ids, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			f.IDs = append(f.IDs, id)
+		}
+	}
+	if len(f.IDs) == 0 && f.ReasonPrefix == "" && !all {
+		return event.RequeueFilter{}, errors.New("no filter given: pass --id, --reason-prefix, or --all to requeue every input dead letter")
+	}
+	return f, nil
+}
+
+// RunRequeue parses args, requeues the matching input dead letters and
+// reports the count on out.
+func RunRequeue(ctx context.Context, q Requeuer, args []string, out io.Writer) error {
+	f, err := ParseRequeueFlags(args)
+	if err != nil {
+		return err
+	}
+	n, err := q.Requeue(ctx, f)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "requeued %d events\n", n)
 	return err
 }

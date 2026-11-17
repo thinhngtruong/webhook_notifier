@@ -163,3 +163,32 @@ func (q *PGQueue) DeadLetterStats(ctx context.Context) (QueueStats, error) {
 	s.OldestAge = time.Duration(age * float64(time.Second))
 	return s, nil
 }
+
+// RequeueFilter selects input dead letters to put back on the queue.
+// Empty fields match everything.
+type RequeueFilter struct {
+	IDs          []string
+	ReasonPrefix string // e.g. "received" or "malformed"
+}
+
+// Requeue moves matching dead letters back to the queue with a fresh
+// receive count and returns how many moved.
+func (q *PGQueue) Requeue(ctx context.Context, f RequeueFilter) (int64, error) {
+	var n int64
+	err := q.pool.QueryRow(ctx, `
+		WITH moved AS (
+			DELETE FROM events_dead_letters
+			 WHERE (COALESCE(cardinality($1::text[]), 0) = 0 OR id = ANY($1))
+			   AND ($2 = '' OR starts_with(reason, $2))
+			RETURNING id, name, account_id, event_time, payload, trace_context
+		), requeued AS (
+			INSERT INTO events_queue (id, name, account_id, event_time, payload, trace_context)
+			SELECT id, name, account_id, event_time, payload, trace_context FROM moved
+			ON CONFLICT (id) DO NOTHING
+		)
+		SELECT count(*) FROM moved`, f.IDs, f.ReasonPrefix).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("requeue dead letters: %w", err)
+	}
+	return n, nil
+}

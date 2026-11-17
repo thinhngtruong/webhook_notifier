@@ -41,3 +41,16 @@ func TestParseFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRequeueFlags(t *testing.T) {
+	f, err := ParseRequeueFlags([]string{"--id=a,b", "--reason-prefix=received"})
+	if err != nil || len(f.IDs) != 2 || f.IDs[1] != "b" || f.ReasonPrefix != "received" {
+		t.Fatalf("filter = %+v, %v", f, err)
+	}
+	if f, err := ParseRequeueFlags([]string{"--all"}); err != nil || len(f.IDs) != 0 || f.ReasonPrefix != "" {
+		t.Fatalf("--all = %+v, %v", f, err)
+	}
+	if _, err := ParseRequeueFlags(nil); err == nil || !strings.Contains(err.Error(), "--all") {
+		t.Fatalf("empty filter: err = %v", err)
+	}
+}

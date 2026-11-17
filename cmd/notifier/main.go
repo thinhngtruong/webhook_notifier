@@ -35,10 +35,12 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// Admin subcommand: notifier replay [--account ...] [--webhook ...] [--from ...] [--to ...] [--all]
-	if len(os.Args) > 1 && os.Args[1] == "replay" {
-		if err := runReplay(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "replay:", err)
+	// Admin subcommands:
+	//   notifier replay [--account ...] [--webhook ...] [--from ...] [--to ...] [--all]
+	//   notifier requeue-events [--id a,b] [--reason-prefix received|malformed] [--all]
+	if len(os.Args) > 1 && (os.Args[1] == "replay" || os.Args[1] == "requeue-events") {
+		if err := runAdmin(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, os.Args[1]+":", err)
 			os.Exit(1)
 		}
 		return
@@ -50,7 +52,7 @@ func main() {
 	}
 }
 
-func runReplay(args []string) error {
+func runAdmin(cmd string, args []string) error {
 	cfg, err := config.Load(nil, os.Getenv) // only DATABASE_URL is used
 	if err != nil {
 		return err
@@ -62,6 +64,9 @@ func runReplay(args []string) error {
 		return err
 	}
 	defer pool.Close()
+	if cmd == "requeue-events" {
+		return replay.RunRequeue(ctx, event.NewPGQueue(pool, cfg.EventVisibility, cfg.EventMaxReceives), args, os.Stdout)
+	}
 	return replay.Run(ctx, store.New(pool), args, os.Stdout)
 }
 

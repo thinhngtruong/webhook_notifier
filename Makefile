@@ -5,7 +5,7 @@ COMPOSE ?= docker compose
 # Integration tests create throwaway databases on the compose Postgres.
 TEST_DATABASE_URL ?= postgres://notifier:notifier@localhost:55432/notifier?sslmode=disable
 
-.PHONY: test-alerts up down db test test-unit lint fmt build bench replay up-metrics
+.PHONY: requeue-events test-alerts up down db test test-unit lint fmt build bench replay up-metrics
 
 up: ## build and start postgres, notifier x2, producer, partner
 	$(COMPOSE) up -d --build --force-recreate
@@ -46,6 +46,9 @@ bench: db ## run the four benchmark scenarios and print a report
 
 replay: ## replay dead deliveries, e.g. make replay ARGS="--account=account-123"
 	$(COMPOSE) exec -T notifier-1 notifier replay $(ARGS)
+
+requeue-events: ## requeue input dead letters, e.g. make requeue-events ARGS="--reason-prefix=received"
+	$(COMPOSE) exec -T notifier-1 notifier requeue-events $(ARGS)
 
 up-metrics: ## make up plus Prometheus (:9091) and the trace viewer (:16686)
 	$(COMPOSE) --profile metrics up -d --build --force-recreate

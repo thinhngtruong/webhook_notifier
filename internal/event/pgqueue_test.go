@@ -3,6 +3,7 @@ package event_test
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +182,42 @@ func TestPGQueueCarriesTraceContext(t *testing.T) {
 	}
 	if by["e1"] != e.TraceContext || by["e2"] != "" {
 		t.Fatalf("trace contexts = %v", by)
+	}
+}
+
+func TestPGQueueRequeue(t *testing.T) {
+	pool := testpg.New(t)
+	q := event.NewPGQueue(pool, 50*time.Millisecond, 5)
+	ctx := context.Background()
+	q.Publish(ctx, pgEvent("r1"), pgEvent("r2"), pgEvent("r3"), pgEvent("bad"))
+	q.Receive(ctx, 10)
+	for _, id := range []string{"r1", "r2", "r3"} {
+		q.DeadLetter(ctx, id, "received 5 times without an ack")
+	}
+	q.DeadLetter(ctx, "bad", "malformed: missing account_id")
+
+	n, err := q.Requeue(ctx, event.RequeueFilter{ReasonPrefix: "received", IDs: []string{"r1", "r2"}})
+	if err != nil || n != 2 {
+		t.Fatalf("requeue = %d, %v; want 2", n, err)
+	}
+	got, _ := q.Receive(ctx, 10)
+	if strings.Join(ids(got), ",") != "r1,r2" {
+		t.Fatalf("received after requeue = %v", ids(got))
+	}
+	var counts []int
+	rows, _ := pool.Query(ctx, `SELECT receive_count FROM events_queue ORDER BY id`)
+	for rows.Next() {
+		var c int
+		rows.Scan(&c)
+		counts = append(counts, c)
+	}
+	if len(counts) != 2 || counts[0] != 1 || counts[1] != 1 {
+		t.Fatalf("receive counts = %v, want a fresh count (1 after this receive)", counts)
+	}
+	if dl := deadLetters(t, pool); len(dl) != 2 || dl["r3"] == "" || dl["bad"] == "" {
+		t.Fatalf("remaining dead letters = %v, want r3 and bad", dl)
+	}
+	if n, _ := q.Requeue(ctx, event.RequeueFilter{}); n != 2 {
+		t.Fatalf("requeue all = %d, want 2", n)
 	}
 }

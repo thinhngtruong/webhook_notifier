@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/replay"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/testpg"
@@ -74,5 +75,23 @@ func TestRunRejectsBadArgumentsWithoutTouchingData(t *testing.T) {
 	}
 	if countStatus(t, st, "account-a", store.StatusDead) != 1 {
 		t.Error("data changed despite the error")
+	}
+}
+
+type fakeRequeuer struct{ got event.RequeueFilter }
+
+func (f *fakeRequeuer) Requeue(_ context.Context, rf event.RequeueFilter) (int64, error) {
+	f.got = rf
+	return 3, nil
+}
+
+func TestRunRequeueReportsCount(t *testing.T) {
+	fq := &fakeRequeuer{}
+	var out bytes.Buffer
+	if err := replay.RunRequeue(context.Background(), fq, []string{"--reason-prefix=received"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if fq.got.ReasonPrefix != "received" || !strings.Contains(out.String(), "requeued 3 events") {
+		t.Fatalf("filter %+v, output %q", fq.got, out.String())
 	}
 }
