@@ -91,7 +91,7 @@ func run() error {
 	sources := metrics.Sources{
 		Backlog: func(ctx context.Context) (metrics.Backlog, error) {
 			b, err := st.Backlog(ctx)
-			return metrics.Backlog{Pending: b.Pending, ActiveAccounts: b.ActiveAccounts, OldestDueAge: b.OldestDueAge}, err
+			return metrics.Backlog{Pending: b.Pending, ActiveAccounts: b.ActiveAccounts, OldestDueAge: b.OldestDueAge, Dead: b.Dead}, err
 		},
 		DBPoolInUse: func() int64 { return int64(pool.Stat().AcquiredConns()) },
 	}

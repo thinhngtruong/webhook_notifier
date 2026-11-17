@@ -1,0 +1,106 @@
+# Unit tests for deploy/alerts.yml: make test-alerts (promtool test rules).
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  # ~4.8% of attempts end dead: ticket after the 15m hold, not before.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_deliveries_total{outcome="succeeded",cause="http_2xx",instance="notifier-1"}'
+        values: '0+100x60'
+      - series: 'webhook_deliveries_total{outcome="dead",cause="http_4xx",instance="notifier-1"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: WebhookDeadLetterRatioHigh
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: WebhookDeadLetterRatioHigh
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: More than 1% of delivery attempts end in the dead-letter queue
+              description: Check webhook_deliveries_total{outcome=~"dead|gone"} by cause. 4xx and 410 point at partner configuration; exhausted 5xx or timeouts at a partner outage longer than the retry window. Replay with notifier replay once fixed.
+              runbook: docs/runbook.md#dead-letters
+
+  # Same 4.8% dead while a circuit postpones thousands of attempts: postponed
+  # attempts must not dilute the ratio and hide the dead letters.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_deliveries_total{outcome="succeeded",cause="http_2xx",instance="notifier-1"}'
+        values: '0+100x60'
+      - series: 'webhook_deliveries_total{outcome="dead",cause="http_5xx",instance="notifier-1"}'
+        values: '0+5x60'
+      - series: 'webhook_deliveries_total{outcome="postponed",cause="circuit_open",instance="notifier-1"}'
+        values: '0+5000x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: WebhookDeadLetterRatioHigh
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: More than 1% of delivery attempts end in the dead-letter queue
+              description: Check webhook_deliveries_total{outcome=~"dead|gone"} by cause. 4xx and 410 point at partner configuration; exhausted 5xx or timeouts at a partner outage longer than the retry window. Replay with notifier replay once fixed.
+              runbook: docs/runbook.md#dead-letters
+
+  # 0.5% dead: no alert.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_deliveries_total{outcome="succeeded",cause="http_2xx",instance="notifier-1"}'
+        values: '0+200x60'
+      - series: 'webhook_deliveries_total{outcome="dead",cause="http_4xx",instance="notifier-1"}'
+        values: '0+1x60'
+      - series: 'webhook_deliveries_total{outcome="postponed",cause="circuit_open",instance="notifier-1"}'
+        values: '0+5000x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: WebhookDeadLetterRatioHigh
+        exp_alerts: []
+
+  # Two replicas report the same database-wide DLQ size: one alert, not two.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dead_deliveries{instance="notifier-1"}'
+        values: '20000x60'
+      - series: 'webhook_dead_deliveries{instance="notifier-2"}'
+        values: '20000x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WebhookDeadLetterQueueLarge
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: WebhookDeadLetterQueueLarge
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: The dead-letter queue holds more than 10,000 deliveries
+              description: Dead deliveries are kept 30 days and replayable. Find the accounts and webhooks behind them (deliveries WHERE status = 'dead'), fix the cause, then replay with notifier replay.
+              runbook: docs/runbook.md#dead-letters
+
+  # DLQ grows by 50 a minute: more than 1,000 in the last hour.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dead_deliveries{instance="notifier-1"}'
+        values: '0+50x90'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: WebhookDeadLetterQueueGrowing
+        exp_alerts: []
+      - eval_time: 80m
+        alertname: WebhookDeadLetterQueueGrowing
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: The dead-letter queue grew by more than 1,000 deliveries in the last hour
+              description: Something new is failing permanently. Check webhook_deliveries_total{outcome=~"dead|gone"} by cause and the partner dashboard.
+              runbook: docs/runbook.md#dead-letters
+
+  # A stable DLQ (already investigated) does not keep alerting as growing.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dead_deliveries{instance="notifier-1"}'
+        values: '5000x90'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: WebhookDeadLetterQueueGrowing
+        exp_alerts: []

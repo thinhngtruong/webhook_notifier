@@ -13,6 +13,7 @@ type Backlog struct {
 	Pending        int64         // pending deliveries
 	ActiveAccounts int64         // accounts in the fair ring
 	OldestDueAge   time.Duration // how long the oldest due delivery has waited
+	Dead           int64         // dead-letter queue size
 }
 
 // Sources supplies the values of the observed gauges at scrape time. Nil
@@ -42,6 +43,11 @@ func (m *Metrics) Observe(s Sources) error {
 		if err != nil {
 			return err
 		}
+		dead, err := m.meter.Int64ObservableGauge("webhook.dead_deliveries",
+			metric.WithDescription("Dead deliveries not replayed: the dead-letter queue."))
+		if err != nil {
+			return err
+		}
 		oldest, err := m.meter.Float64ObservableGauge("webhook.oldest_due_pending_age", metric.WithUnit("s"),
 			metric.WithDescription("How long the oldest due delivery has been waiting."))
 		if err != nil {
@@ -55,9 +61,10 @@ func (m *Metrics) Observe(s Sources) error {
 			}
 			o.ObserveInt64(pending, b.Pending)
 			o.ObserveInt64(active, b.ActiveAccounts)
+			o.ObserveInt64(dead, b.Dead)
 			o.ObserveFloat64(oldest, b.OldestDueAge.Seconds())
 			return nil
-		}, pending, active, oldest)
+		}, pending, active, dead, oldest)
 		if err != nil {
 			return err
 		}

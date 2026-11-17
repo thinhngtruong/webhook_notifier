@@ -5,7 +5,7 @@ COMPOSE ?= docker compose
 # Integration tests create throwaway databases on the compose Postgres.
 TEST_DATABASE_URL ?= postgres://notifier:notifier@localhost:55432/notifier?sslmode=disable
 
-.PHONY: up down db test test-unit lint fmt build bench replay up-metrics
+.PHONY: test-alerts up down db test test-unit lint fmt build bench replay up-metrics
 
 up: ## build and start postgres, notifier x2, producer, partner
 	$(COMPOSE) up -d --build --force-recreate
@@ -19,7 +19,13 @@ db: ## start only postgres and wait until it is healthy
 build:
 	go build ./...
 
-test: db ## unit + integration tests
+PROMETHEUS_IMAGE ?= prom/prometheus:v3.5.0
+
+test-alerts: ## unit-test the Prometheus alert rules with promtool
+	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /deploy/alerts.yml
+	docker run --rm -v "$(CURDIR)/deploy:/deploy:ro" -w /deploy --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
+
+test: db test-alerts ## unit + integration tests, and alert rule tests
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race -count=1 -timeout 5m ./...
 
 test-unit: ## unit tests only; integration tests skip without TEST_DATABASE_URL

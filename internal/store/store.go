@@ -97,4 +97,5 @@ type BacklogStats struct {
 	Pending        int64
 	ActiveAccounts int64
 	OldestDueAge   time.Duration // 0 when nothing is due
+	Dead           int64         // dead deliveries not replayed (the dead-letter queue)
 }

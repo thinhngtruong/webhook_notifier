@@ -16,7 +16,7 @@ func TestObservedGauges(t *testing.T) {
 	err := m.Observe(metrics.Sources{
 		Backlog: func(context.Context) (metrics.Backlog, error) {
 			backlogCalls++
-			return metrics.Backlog{Pending: 7, ActiveAccounts: 3, OldestDueAge: 12500 * time.Millisecond}, nil
+			return metrics.Backlog{Pending: 7, ActiveAccounts: 3, OldestDueAge: 12500 * time.Millisecond, Dead: 5}, nil
 		},
 		WorkerSlotsInUse: func() int64 { return 4 },
 		DBPoolInUse:      func() int64 { return 2 },
@@ -29,6 +29,7 @@ func TestObservedGauges(t *testing.T) {
 	out := scrape()
 	for _, want := range []string{
 		"webhook_pending_deliveries 7",
+		"webhook_dead_deliveries 5",
 		"webhook_active_accounts 3",
 		"webhook_oldest_due_pending_age_seconds 12.5",
 		"webhook_worker_slots_in_use 4",

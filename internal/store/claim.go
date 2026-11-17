@@ -192,10 +192,11 @@ func (s *Store) Backlog(ctx context.Context) (BacklogStats, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM deliveries WHERE status = 'pending'),
 		       (SELECT count(*) FROM account_queues WHERE active),
+		       (SELECT count(*) FROM deliveries WHERE status = 'dead'),
 		       COALESCE(EXTRACT(EPOCH FROM now() - (
 		           SELECT min(next_attempt_at) FROM deliveries
 		            WHERE status = 'pending' AND next_attempt_at <= now())), 0)::float8`,
-	).Scan(&b.Pending, &b.ActiveAccounts, &ageSeconds)
+	).Scan(&b.Pending, &b.ActiveAccounts, &b.Dead, &ageSeconds)
 	if err != nil {
 		return BacklogStats{}, fmt.Errorf("backlog: %w", err)
 	}

@@ -330,6 +330,7 @@ Large accounts are expected to queue behind their own bursts, so they are measur
 | webhook_http_duration_seconds{result}                        | Histogram      | Partner latency, split by success and failure           |
 | webhook_deliveries_total{outcome, cause}                     | Counter        | Traffic, and errors split into our side vs partner side |
 | webhook_pending_deliveries, webhook_active_accounts          | Gauge          | Backlog and how many accounts are waiting               |
+| webhook_dead_deliveries                                      | Gauge          | Dead-letter queue size (dead, not replayed)             |
 | webhook_oldest_due_pending_age_seconds                       | Gauge          | Saturation of the whole pipeline                        |
 | webhook_worker_slots_in_use, db_pool_in_use                  | Gauge          | Saturation of a replica                                 |
 | webhook_endpoint_throttled_total, webhook_circuit_open{host} | Counter, Gauge | Partner health and per-endpoint limits being hit        |
@@ -364,6 +365,10 @@ Alerts fire on SLO burn rate rather than fixed thresholds, using a long and a sh
 - Durability misses and a growing input queue age also page, since they can mean lost or stuck events.
 
 - Errors from a single partner endpoint never page. They open that endpoint's circuit breaker and show up on the dashboard and in a daily report.
+
+- Dead letters are tickets, never pages: more than 1% of attempts ending dead over 30m (postponed attempts excluded so a circuit cannot hide them), a dead-letter queue above 10,000, or one that grew by more than 1,000 in an hour. Runbook: docs/runbook.md#dead-letters.
+
+- In the PoC: deploy/alerts.yml holds the dead-letter rules, unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. There is no Alertmanager, so alerts are only visible in Prometheus. The SLO burn-rate alerts above are not written yet.
 
 - Every page links to a short runbook: how to tell our fault from a partner fault, how to check fairness (backlog by tier), how to pause or throttle an account, and how to replay dead deliveries.
 

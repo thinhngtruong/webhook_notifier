@@ -1,0 +1,44 @@
+# Alert rules (Prometheus). Tested by deploy/alerts_test.yml: make test-alerts.
+#
+# Dead letters are tickets, not pages: they come from partner-side causes
+# (rejections, outages longer than the retry window), stay replayable for
+# 30 days, and design.md says a single partner's errors never page. The
+# thresholds are starting points to tune against real traffic.
+groups:
+  - name: webhook-dead-letters
+    rules:
+      - alert: WebhookDeadLetterRatioHigh
+        # Postponed attempts (circuit open, host at its limit) never reached
+        # the partner, so they count on neither side of the ratio.
+        expr: |
+          sum(rate(webhook_deliveries_total{outcome=~"dead|gone"}[30m]))
+            /
+          sum(rate(webhook_deliveries_total{outcome!="postponed"}[30m]))
+            > 0.01
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: More than 1% of delivery attempts end in the dead-letter queue
+          description: Check webhook_deliveries_total{outcome=~"dead|gone"} by cause. 4xx and 410 point at partner configuration; exhausted 5xx or timeouts at a partner outage longer than the retry window. Replay with notifier replay once fixed.
+          runbook: docs/runbook.md#dead-letters
+
+      - alert: WebhookDeadLetterQueueLarge
+        # Every replica reports the same database-wide count: take one.
+        expr: max(webhook_dead_deliveries) > 10000
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: The dead-letter queue holds more than 10,000 deliveries
+          description: Dead deliveries are kept 30 days and replayable. Find the accounts and webhooks behind them (deliveries WHERE status = 'dead'), fix the cause, then replay with notifier replay.
+          runbook: docs/runbook.md#dead-letters
+
+      - alert: WebhookDeadLetterQueueGrowing
+        expr: max(webhook_dead_deliveries) - max(webhook_dead_deliveries offset 1h) > 1000
+        labels:
+          severity: ticket
+        annotations:
+          summary: The dead-letter queue grew by more than 1,000 deliveries in the last hour
+          description: Something new is failing permanently. Check webhook_deliveries_total{outcome=~"dead|gone"} by cause and the partner dashboard.
+          runbook: docs/runbook.md#dead-letters

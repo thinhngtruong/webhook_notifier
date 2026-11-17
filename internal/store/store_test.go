@@ -728,9 +728,16 @@ func TestBacklog(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := e.s.AckDead(e.ctx, d[1].Lease(), "HTTP 400"); err != nil { // one dead letter
+		t.Fatal(err)
+	}
+
 	b, err := e.s.Backlog(e.ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if b.Dead != 1 {
+		t.Errorf("dead = %d, want 1", b.Dead)
 	}
 	if b.Pending != 4 || b.ActiveAccounts != 2 {
 		t.Errorf("backlog = %+v, want 4 pending in 2 active accounts", b)
