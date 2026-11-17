@@ -169,3 +169,17 @@ func TestClaimModeSetting(t *testing.T) {
 		t.Fatalf("invalid mode: err = %v", err)
 	}
 }
+
+func TestEventMaxReceivesSetting(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil || c.EventMaxReceives != 5 {
+		t.Fatalf("default = %d, %v; want 5", c.EventMaxReceives, err)
+	}
+	c, err = Load(nil, env(map[string]string{"EVENT_MAX_RECEIVES": "3"}))
+	if err != nil || c.EventMaxReceives != 3 {
+		t.Fatalf("env = %d, %v", c.EventMaxReceives, err)
+	}
+	if _, err := Load([]string{"--event-max-receives=0"}, env(nil)); err == nil {
+		t.Fatal("zero accepted")
+	}
+}

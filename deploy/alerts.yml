@@ -42,3 +42,17 @@ groups:
           summary: The dead-letter queue grew by more than 1,000 deliveries in the last hour
           description: Something new is failing permanently. Check webhook_deliveries_total{outcome=~"dead|gone"} by cause and the partner dashboard.
           runbook: docs/runbook.md#dead-letters
+
+  # Events the dispatcher could not fan out never produced deliveries: that
+  # is a durability miss, and design.md says any durability miss pages.
+  - name: webhook-input-dead-letters
+    rules:
+      - alert: WebhookInputDeadLetters
+        expr: max(webhook_input_dead_letters) > 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: Events in the input dead-letter queue produced no deliveries
+          description: The dispatcher dead-lettered events (malformed, or received too many times without an ack). Their webhooks were never called, which breaks the durability SLO. Inspect events_dead_letters, fix the cause, then requeue them.
+          runbook: docs/runbook.md#input-dead-letters

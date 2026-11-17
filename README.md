@@ -46,7 +46,8 @@ producer → events_queue → Dispatcher → deliveries (+ account ring) → fai
 2. Each replica's **claim loop** takes accounts from the front of the ring (least recently served first), takes up to a quantum of due deliveries from each, leases them for 30s and moves those accounts to the back. `FOR UPDATE SKIP LOCKED` lets replicas claim in parallel with no leader. A replica only claims as many deliveries as it has free worker slots.
 3. **Workers** POST with `X-Webhook-Id`, `X-Webhook-Timestamp` and `X-Webhook-Signature` (HMAC-SHA256 of `timestamp.body`), then ack: succeeded; retry with backoff (30s ×3, cap 8h, ±20% jitter, 10 attempts, `Retry-After` honoured); or dead (other 4xx, 3xx, 410 also disables the webhook). Acks are fenced on the attempt number, so a worker whose lease expired cannot overwrite a newer attempt.
 4. The **reaper** returns expired leases (crashed or hung workers) to pending every 10s.
-5. **Partner protection**: a per-host concurrency limit and circuit breaker postpone deliveries without using up attempts, and the dialer refuses internal addresses (SSRF) and plain HTTP.
+5. **Dead letters**: deliveries that fail permanently are kept 30 days and replayable (`make replay`, ticket alerts). Events the dispatcher cannot fan out (malformed, or received 5 times without an ack) go to an input dead-letter queue, which pages: their webhooks were never called. See [docs/runbook.md](docs/runbook.md).
+6. **Partner protection**: a per-host concurrency limit and circuit breaker postpone deliveries without using up attempts, and the dialer refuses internal addresses (SSRF) and plain HTTP.
 
 ## Assumptions
 
@@ -73,7 +74,7 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, distributed tracing, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a dead-letter queue for events the dispatcher can never fan out, and batched acks.
+- Not built yet: the retry budget, distributed tracing, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), a command to requeue input dead letters (the runbook has the SQL), and batched acks.
 - A replayed delivery restarts at attempt 1 and is counted as a "first attempt" with its old event time, which skews the freshness metric.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
@@ -87,4 +88,4 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 
 ## Time spent
 
-About 12 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
+About 13 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.

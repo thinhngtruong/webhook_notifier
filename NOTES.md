@@ -13,8 +13,9 @@ Time spent per step (for the total estimate).
 | 7. Metrics (OpenTelemetry) | 1.25h | Switched from client_golang to the OTel SDK + Prometheus exporter at the user's request. Instruments named per design.md, scrape-tested; backlog gauges from one query; worker/dispatcher/claim/reaper instrumented; tier via LARGE_ACCOUNTS; Prometheus profile verified scraping both replicas. Tracing moved to a later step. |
 | 8. Producer, partner, benchmarks | 3.5h | Postgres event queue + dispatcher role, shared-queue baseline, fake partner/producer, in-process bench with 4 scenarios. Bugs found: bench replicas connected to the dev DB (pgxpool ConnString returns the original string); a test hang hidden by an over-generous timeout. |
 | 8b. Dead-letter metric + alerts | 0.5h | webhook_dead_deliveries gauge, three ticket-level DLQ alerts unit-tested with promtool (mutation-checked), runbook. |
+| 9b. Input dead-letter queue | 0.75h | Receive limit + explicit dead-lettering of malformed events, gauges, page alert (promtool-tested), runbook. Found and fixed: a zero event time made fan-out create a partition per day back to year 1 (62,160 partitions before the test was stopped). |
 | 9. README | 0.5h | How to run, assumptions, benchmark results, limitations, next steps. |
-| **Total** | **~12h** | |
+| **Total** | **~13h** | |
 
 ## Process
 

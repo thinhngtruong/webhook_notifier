@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/testpg"
 )
@@ -25,7 +27,7 @@ func ids(es []event.Event) []string {
 }
 
 func TestPGQueueReceivesInBatchesAndHidesReceivedEvents(t *testing.T) {
-	q := event.NewPGQueue(testpg.New(t), time.Minute)
+	q := event.NewPGQueue(testpg.New(t), time.Minute, 5)
 	ctx := context.Background()
 	if err := q.Publish(ctx, pgEvent("e1"), pgEvent("e2"), pgEvent("e3")); err != nil {
 		t.Fatal(err)
@@ -48,7 +50,7 @@ func TestPGQueueReceivesInBatchesAndHidesReceivedEvents(t *testing.T) {
 }
 
 func TestPGQueueRedeliversUnackedEventsAfterVisibility(t *testing.T) {
-	q := event.NewPGQueue(testpg.New(t), 100*time.Millisecond)
+	q := event.NewPGQueue(testpg.New(t), 100*time.Millisecond, 5)
 	ctx := context.Background()
 	q.Publish(ctx, pgEvent("acked"), pgEvent("lost"))
 	if got, _ := q.Receive(ctx, 10); len(got) != 2 {
@@ -65,7 +67,7 @@ func TestPGQueueRedeliversUnackedEventsAfterVisibility(t *testing.T) {
 }
 
 func TestPGQueuePublishIsIdempotent(t *testing.T) {
-	q := event.NewPGQueue(testpg.New(t), time.Minute)
+	q := event.NewPGQueue(testpg.New(t), time.Minute, 5)
 	ctx := context.Background()
 	q.Publish(ctx, pgEvent("e1"))
 	if err := q.Publish(ctx, pgEvent("e1")); err != nil {
@@ -78,7 +80,7 @@ func TestPGQueuePublishIsIdempotent(t *testing.T) {
 
 func TestPGQueueStats(t *testing.T) {
 	pool := testpg.New(t)
-	q := event.NewPGQueue(pool, time.Minute)
+	q := event.NewPGQueue(pool, time.Minute, 5)
 	ctx := context.Background()
 	if s, err := q.Stats(ctx); err != nil || s != (event.QueueStats{}) {
 		t.Fatalf("empty stats = %+v, %v", s, err)
@@ -90,5 +92,78 @@ func TestPGQueueStats(t *testing.T) {
 	s, err := q.Stats(ctx)
 	if err != nil || s.Waiting != 2 || s.OldestAge < 29*time.Second || s.OldestAge > 35*time.Second {
 		t.Fatalf("stats = %+v, %v; want 2 waiting, oldest ~30s", s, err)
+	}
+}
+
+func deadLetters(t *testing.T, pool *pgxpool.Pool) map[string]string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `SELECT id, reason FROM events_dead_letters`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, reason string
+		if err := rows.Scan(&id, &reason); err != nil {
+			t.Fatal(err)
+		}
+		out[id] = reason
+	}
+	return out
+}
+
+func TestPGQueueDeadLettersEventsReceivedTooOften(t *testing.T) {
+	pool := testpg.New(t)
+	q := event.NewPGQueue(pool, 50*time.Millisecond, 2)
+	ctx := context.Background()
+	q.Publish(ctx, pgEvent("poison"), pgEvent("fine"))
+
+	for receive := 1; receive <= 2; receive++ { // received twice, never acked
+		got, _ := q.Receive(ctx, 10)
+		if receive == 1 && len(got) != 2 {
+			t.Fatalf("receive %d = %v", receive, ids(got))
+		}
+		for _, e := range got {
+			if e.ID == "fine" && receive == 1 {
+				q.Ack(ctx, []string{"fine"})
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got, _ := q.Receive(ctx, 10); len(got) != 0 {
+		t.Fatalf("third receive = %v; an event at the receive limit must not be delivered again", ids(got))
+	}
+	dl := deadLetters(t, pool)
+	if len(dl) != 1 || dl["poison"] == "" {
+		t.Fatalf("dead letters = %v, want only poison with a reason", dl)
+	}
+}
+
+func TestPGQueueDeadLetterAndStats(t *testing.T) {
+	pool := testpg.New(t)
+	q := event.NewPGQueue(pool, 50*time.Millisecond, 5)
+	ctx := context.Background()
+	if s, err := q.DeadLetterStats(ctx); err != nil || s != (event.QueueStats{}) {
+		t.Fatalf("empty stats = %+v, %v", s, err)
+	}
+	q.Publish(ctx, pgEvent("bad"), pgEvent("old-bad"))
+	q.Receive(ctx, 10)
+	if err := q.DeadLetter(ctx, "bad", "malformed: missing account"); err != nil {
+		t.Fatal(err)
+	}
+	q.DeadLetter(ctx, "old-bad", "malformed: x")
+	pool.Exec(ctx, `UPDATE events_dead_letters SET dead_at = now() - interval '20 seconds' WHERE id = 'old-bad'`)
+
+	time.Sleep(100 * time.Millisecond)
+	if got, _ := q.Receive(ctx, 10); len(got) != 0 {
+		t.Fatalf("dead-lettered events received again: %v", ids(got))
+	}
+	if dl := deadLetters(t, pool); dl["bad"] != "malformed: missing account" {
+		t.Fatalf("dead letters = %v", dl)
+	}
+	s, err := q.DeadLetterStats(ctx)
+	if err != nil || s.Waiting != 2 || s.OldestAge < 19*time.Second || s.OldestAge > 25*time.Second {
+		t.Fatalf("dead-letter stats = %+v, %v; want 2, oldest ~20s", s, err)
 	}
 }

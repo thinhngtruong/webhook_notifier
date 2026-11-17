@@ -104,3 +104,34 @@ tests:
       - eval_time: 80m
         alertname: WebhookDeadLetterQueueGrowing
         exp_alerts: []
+
+  # One event in the input dead-letter queue is a durability miss: page,
+  # once, even though both replicas report the gauge.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_input_dead_letters{instance="notifier-1"}'
+        values: '0 0 1x20'
+      - series: 'webhook_input_dead_letters{instance="notifier-2"}'
+        values: '0 0 1x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WebhookInputDeadLetters
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: WebhookInputDeadLetters
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: Events in the input dead-letter queue produced no deliveries
+              description: The dispatcher dead-lettered events (malformed, or received too many times without an ack). Their webhooks were never called, which breaks the durability SLO. Inspect events_dead_letters, fix the cause, then requeue them.
+              runbook: docs/runbook.md#input-dead-letters
+
+  # An empty input dead-letter queue stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_input_dead_letters{instance="notifier-1"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: WebhookInputDeadLetters
+        exp_alerts: []

@@ -109,9 +109,13 @@ func run() error {
 	// Roles run until ctx is cancelled; Wait returns once each has finished
 	// its in-flight work.
 	var roles sync.WaitGroup
-	queue := event.NewPGQueue(pool, cfg.EventVisibility)
+	queue := event.NewPGQueue(pool, cfg.EventVisibility, cfg.EventMaxReceives)
 	sources.InputQueue = func(ctx context.Context) (int64, time.Duration, error) {
 		qs, err := queue.Stats(ctx)
+		return qs.Waiting, qs.OldestAge, err
+	}
+	sources.InputDeadLetters = func(ctx context.Context) (int64, time.Duration, error) {
+		qs, err := queue.DeadLetterStats(ctx)
 		return qs.Waiting, qs.OldestAge, err
 	}
 	if cfg.Dispatcher {

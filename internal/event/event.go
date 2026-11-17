@@ -24,4 +24,7 @@ type Source interface {
 	Receive(ctx context.Context, max int) ([]Event, error)
 	// Ack removes events (by ID) from the queue for good.
 	Ack(ctx context.Context, ids []string) error
+	// DeadLetter moves a received event to the dead-letter queue with a
+	// reason, so it is not received again.
+	DeadLetter(ctx context.Context, id, reason string) error
 }

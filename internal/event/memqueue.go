@@ -16,6 +16,7 @@ type MemQueue struct {
 	mu       sync.Mutex
 	ready    []Event
 	inFlight map[string]inFlight
+	dead     map[string]string // id -> reason
 }
 
 type inFlight struct {
@@ -28,7 +29,7 @@ func NewMemQueue(visibility time.Duration, now func() time.Time) *MemQueue {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemQueue{visibility: visibility, now: now, inFlight: map[string]inFlight{}}
+	return &MemQueue{visibility: visibility, now: now, inFlight: map[string]inFlight{}, dead: map[string]string{}}
 }
 
 // Publish adds events to the queue.
@@ -68,4 +69,24 @@ func (q *MemQueue) Ack(ctx context.Context, ids []string) error {
 		delete(q.inFlight, id)
 	}
 	return nil
+}
+
+// DeadLetter implements Source.
+func (q *MemQueue) DeadLetter(ctx context.Context, id, reason string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.inFlight, id)
+	q.dead[id] = reason
+	return nil
+}
+
+// DeadLetters returns dead-lettered event IDs and their reasons.
+func (q *MemQueue) DeadLetters() map[string]string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make(map[string]string, len(q.dead))
+	for id, r := range q.dead {
+		out[id] = r
+	}
+	return out
 }

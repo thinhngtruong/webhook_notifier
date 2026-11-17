@@ -167,6 +167,8 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 - Events are acked only after the commit. A crash before that means redelivery, absorbed by the primary key. Events that keep failing go to the queue's dead-letter queue.
 
+- In the PoC: malformed events (missing account, event name or time, or a payload that is not a JSON object) are dead-lettered on sight with a reason, so one bad event cannot fail its whole batch forever. Events received EVENT_MAX_RECEIVES times (default 5) without an ack are moved to the dead-letter queue by the queue itself. As a second guard, fan-out refuses a batch whose event times span more than 62 days instead of creating a partition for every day in between (a zero event time once meant 740,000 partitions).
+
 ## 3. Fair scheduling
 
 ![Figure 4. Round-robin across accounts](img/fair_round_robin.png)
@@ -335,6 +337,7 @@ Large accounts are expected to queue behind their own bursts, so they are measur
 | webhook_worker_slots_in_use, db_pool_in_use                  | Gauge          | Saturation of a replica                                 |
 | webhook_endpoint_throttled_total, webhook_circuit_open{host} | Counter, Gauge | Partner health and per-endpoint limits being hit        |
 | Input queue: age of oldest event, events waiting             | Gauge          | Ingest falling behind                                   |
+| Input dead-letter queue: events waiting, age of oldest       | Gauge          | Events the Dispatcher could not fan out after N receives (malformed or failing repeatedly) |
 | webhook_events_consumed_total, webhook_errors_total{component} | Counter      | Ingest rate; our own errors (fanout, claim, reaper, event_source, webhook_lookup, metrics), kept apart from partner errors |
 
 Implementation notes (PoC):
@@ -362,13 +365,13 @@ Alerts fire on SLO burn rate rather than fixed thresholds, using a long and a sh
 | 5% in 6 hours     | 6x            | 6h and 30min                 | Page       |
 | 10% in 3 days     | 1x            | 3d and 6h                    | Ticket     |
 
-- Durability misses and a growing input queue age also page, since they can mean lost or stuck events.
+- Durability misses and a growing input queue age also page, since they can mean lost or stuck events. In the PoC, WebhookInputDeadLetters pages as soon as the input dead-letter queue is not empty (deploy/alerts.yml, runbook: docs/runbook.md#input-dead-letters).
 
 - Errors from a single partner endpoint never page. They open that endpoint's circuit breaker and show up on the dashboard and in a daily report.
 
 - Dead letters are tickets, never pages: more than 1% of attempts ending dead over 30m (postponed attempts excluded so a circuit cannot hide them), a dead-letter queue above 10,000, or one that grew by more than 1,000 in an hour. Runbook: docs/runbook.md#dead-letters.
 
-- In the PoC: deploy/alerts.yml holds the dead-letter rules, unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. There is no Alertmanager, so alerts are only visible in Prometheus. The SLO burn-rate alerts above are not written yet.
+- In the PoC: deploy/alerts.yml holds the dead-letter rules (delivery dead letters as tickets, input dead letters as a page), unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. There is no Alertmanager, so alerts are only visible in Prometheus. The SLO burn-rate alerts above are not written yet.
 
 - Every page links to a short runbook: how to tell our fault from a partner fault, how to check fairness (backlog by tier), how to pause or throttle an account, and how to replay dead deliveries.
 

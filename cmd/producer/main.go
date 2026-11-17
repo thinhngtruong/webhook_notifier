@@ -53,7 +53,7 @@ func run() error {
 		return err
 	}
 	st := store.New(pool)
-	queue := event.NewPGQueue(pool, 30*time.Second)
+	queue := event.NewPGQueue(pool, 30*time.Second, 5)
 	urlFor := func(account string) string { return strings.TrimSuffix(*partnerURL, "/") + "/hooks/" + account }
 
 	switch *mode {

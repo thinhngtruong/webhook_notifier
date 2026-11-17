@@ -3,7 +3,9 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -47,9 +49,19 @@ func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 	}
 
 	var deliveries []store.NewDelivery
-	ids := make([]string, len(events))
-	for i, e := range events {
-		ids[i] = e.ID
+	ids := make([]string, 0, len(events))
+	for _, e := range events {
+		if reason := validate(e); reason != "" {
+			// One bad event must not fail the whole batch forever.
+			if err := d.src.DeadLetter(ctx, e.ID, "malformed: "+reason); err != nil {
+				d.metrics.Error(ctx, "event_source")
+				return 0, fmt.Errorf("dead-letter event %s: %w", e.ID, err)
+			}
+			d.metrics.Error(ctx, "malformed_event")
+			slog.Warn("malformed event dead-lettered", "event_id", e.ID, "account_id", e.AccountID, "reason", reason)
+			continue
+		}
+		ids = append(ids, e.ID)
 		hooks, err := d.hooks.Get(ctx, e.AccountID)
 		if err != nil {
 			d.metrics.Error(ctx, "webhook_lookup")
@@ -66,6 +78,10 @@ func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 		}
 	}
 
+	if len(ids) == 0 {
+		d.metrics.EventsConsumed(ctx, len(events))
+		return len(events), nil
+	}
 	if _, err := d.st.FanOut(ctx, deliveries); err != nil {
 		d.metrics.Error(ctx, "fanout")
 		return 0, err
@@ -99,4 +115,19 @@ func (d *Dispatcher) Run(ctx context.Context, idle time.Duration) error {
 		case <-time.After(idle):
 		}
 	}
+}
+
+// validate returns why an event cannot be fanned out, or "" if it can.
+func validate(e event.Event) string {
+	switch {
+	case e.AccountID == "":
+		return "missing account_id"
+	case e.Name == "":
+		return "missing event name"
+	case e.Time.IsZero():
+		return "missing event time"
+	case !json.Valid(e.Payload) || !bytes.HasPrefix(bytes.TrimSpace(e.Payload), []byte("{")):
+		return "payload is not a JSON object"
+	}
+	return ""
 }

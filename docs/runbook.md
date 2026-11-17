@@ -25,3 +25,26 @@ A delivery is dead when the partner rejected it permanently (4xx, 3xx, 410), its
    make replay ARGS="--webhook=<webhook id>"
    ```
    An empty filter is refused unless `--all` is passed. Prefer narrow filters so a replay does not flood a partner.
+
+## Input dead letters
+
+Alert: `WebhookInputDeadLetters` (page). Gauges: `webhook_input_dead_letters`, `webhook_input_dead_letter_oldest_age_seconds`.
+
+These are events the dispatcher could not fan out, so none of their webhooks were called: a durability miss. An event lands here when it is malformed (missing account, event name or time, or a payload that is not a JSON object; reason `malformed: ...`) or when it was received `EVENT_MAX_RECEIVES` times (default 5) without an ack, meaning fan-out kept failing (reason `received N times without an ack`).
+
+1. See what is there:
+   ```sql
+   SELECT reason, count(*), min(dead_at), max(dead_at)
+     FROM events_dead_letters GROUP BY reason ORDER BY 2 DESC;
+   ```
+2. Malformed events: fix the producer side; the event itself usually cannot be repaired here. Failing repeatedly: check `webhook_errors_total{component=~"fanout|webhook_lookup"}` and the dispatcher logs for the database error.
+3. Requeue once the cause is fixed. The deliveries primary key makes this safe if an event was partly fanned out before:
+   ```sql
+   BEGIN;
+   INSERT INTO events_queue (id, name, account_id, event_time, payload)
+   SELECT id, name, account_id, event_time, payload FROM events_dead_letters
+    WHERE reason LIKE 'received %'          -- or: WHERE id = ANY('{...}')
+   ON CONFLICT (id) DO NOTHING;
+   DELETE FROM events_dead_letters WHERE reason LIKE 'received %';
+   COMMIT;
+   ```

@@ -60,3 +60,21 @@ func TestMemQueueRedeliversUnackedEventsAfterVisibilityTimeout(t *testing.T) {
 		t.Fatalf("after timeout = %v; want [lost]", ids(got))
 	}
 }
+
+func TestMemQueueDeadLetter(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(0, 0)}
+	q := NewMemQueue(time.Second, clk.Now)
+	ctx := context.Background()
+	q.Publish(Event{ID: "bad"})
+	q.Receive(ctx, 10)
+	if err := q.DeadLetter(ctx, "bad", "malformed"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(2 * time.Second)
+	if got, _ := q.Receive(ctx, 10); len(got) != 0 {
+		t.Fatalf("dead-lettered event received again: %v", ids(got))
+	}
+	if r := q.DeadLetters()["bad"]; r != "malformed" {
+		t.Fatalf("dead letters = %v", q.DeadLetters())
+	}
+}

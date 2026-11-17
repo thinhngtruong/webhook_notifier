@@ -25,6 +25,7 @@ type Config struct {
 
 	// Dispatcher.
 	EventVisibility   time.Duration // received events reappear after this unless acked
+	EventMaxReceives  int           // receives without an ack before an event is dead-lettered
 	DispatchBatchSize int           // events per fan-out transaction
 	WebhookCacheTTL   time.Duration // per-account webhook cache
 
@@ -68,6 +69,7 @@ func Default() Config {
 		HTTPAddr:           ":8080",
 		DispatchBatchSize:  500,
 		EventVisibility:    30 * time.Second,
+		EventMaxReceives:   5,
 		WebhookCacheTTL:    30 * time.Second,
 		ClaimMode:          "fair",
 		AccountsPerTick:    50,
@@ -105,6 +107,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.BoolVar(&c.Reaper, "reaper", c.Reaper, "run the lease reaper")
 	fs.IntVar(&c.DispatchBatchSize, "dispatch-batch", c.DispatchBatchSize, "events per fan-out transaction (DISPATCH_BATCH_SIZE)")
 	fs.DurationVar(&c.EventVisibility, "event-visibility", c.EventVisibility, "received events reappear after this unless acked (EVENT_VISIBILITY)")
+	fs.IntVar(&c.EventMaxReceives, "event-max-receives", c.EventMaxReceives, "receives without an ack before an event is dead-lettered (EVENT_MAX_RECEIVES)")
 	fs.DurationVar(&c.WebhookCacheTTL, "webhook-cache-ttl", c.WebhookCacheTTL, "per-account webhook cache TTL (WEBHOOK_CACHE_TTL)")
 	fs.StringVar(&c.ClaimMode, "claim-mode", c.ClaimMode, "fair, or shared for the benchmark baseline (CLAIM_MODE)")
 	fs.IntVar(&c.AccountsPerTick, "accounts-per-tick", c.AccountsPerTick, "accounts picked per claim pass (ACCOUNTS_PER_TICK)")
@@ -199,6 +202,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	boolean("ROLE_REAPER", &c.Reaper)
 	integer("DISPATCH_BATCH_SIZE", &c.DispatchBatchSize)
 	duration("EVENT_VISIBILITY", &c.EventVisibility)
+	integer("EVENT_MAX_RECEIVES", &c.EventMaxReceives)
 	duration("WEBHOOK_CACHE_TTL", &c.WebhookCacheTTL)
 	str("CLAIM_MODE", &c.ClaimMode)
 	integer("ACCOUNTS_PER_TICK", &c.AccountsPerTick)
@@ -241,6 +245,7 @@ func (c Config) Validate() error {
 	check(c.DatabaseURL != "", "database URL is required")
 	check(c.DispatchBatchSize > 0, "dispatch batch size must be > 0")
 	check(c.EventVisibility > 0, "event visibility must be > 0")
+	check(c.EventMaxReceives > 0, "event max receives must be > 0")
 	check(c.WebhookCacheTTL > 0, "webhook cache TTL must be > 0")
 	check(c.ClaimMode == "fair" || c.ClaimMode == "shared", "claim mode must be fair or shared")
 	check(c.AccountsPerTick > 0, "accounts per tick must be > 0")

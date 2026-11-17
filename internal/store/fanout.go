@@ -112,9 +112,18 @@ const partitionLockKey = 7_201_640_012
 // EnsurePartitions creates the daily deliveries partitions (UTC days)
 // covering [from, to]. Days already created by this Store are skipped
 // without a round trip.
+// maxPartitionSpan bounds the days one call may cover. A batch spanning
+// more is a bad event time (zero or far off), which would otherwise create
+// thousands of partitions and wedge the dispatcher.
+const maxPartitionSpan = 62 * 24 * time.Hour
+
 func (s *Store) EnsurePartitions(ctx context.Context, from, to time.Time) error {
 	day := from.UTC().Truncate(24 * time.Hour)
 	last := to.UTC().Truncate(24 * time.Hour)
+	if last.Sub(day) > maxPartitionSpan {
+		return fmt.Errorf("event times span %s to %s, more than %v: refusing to create partitions",
+			day.Format("2006-01-02"), last.Format("2006-01-02"), maxPartitionSpan)
+	}
 	for ; !day.After(last); day = day.Add(24 * time.Hour) {
 		if err := s.ensurePartition(ctx, day); err != nil {
 			return err

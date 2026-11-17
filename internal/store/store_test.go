@@ -833,3 +833,23 @@ func TestClaimKeepsTheQuantumWhenMoreAccountsWait(t *testing.T) {
 		}
 	}
 }
+
+// Regression: a zero (or absurd) event time used to make FanOut create one
+// partition per day back to year 1, wedging the dispatcher.
+func TestFanOutRefusesAbsurdEventTimeSpans(t *testing.T) {
+	e := newEnv(t)
+	ds := e.events("account-1", "e", 1, now)
+	zero := e.events("account-1", "z", 1, time.Time{})
+	start := time.Now()
+	if _, err := e.s.FanOut(e.ctx, append(ds, zero...)); err == nil {
+		t.Fatal("want an error for a batch spanning two thousand years")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("refusing took %v", took)
+	}
+	var parts int
+	e.pool.QueryRow(e.ctx, `SELECT count(*) FROM pg_inherits`).Scan(&parts)
+	if parts > 5 {
+		t.Fatalf("%d partitions created", parts)
+	}
+}

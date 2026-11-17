@@ -59,3 +59,18 @@ func TestInputQueueGauges(t *testing.T) {
 		}
 	}
 }
+
+func TestInputDeadLetterGauges(t *testing.T) {
+	m, scrape := metricstest.New(t, metrics.Options{})
+	if err := m.Observe(metrics.Sources{
+		InputDeadLetters: func(context.Context) (int64, time.Duration, error) { return 2, 90 * time.Second, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := scrape()
+	for _, want := range []string{"webhook_input_dead_letters 2", "webhook_input_dead_letter_oldest_age_seconds 90"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}

@@ -24,6 +24,7 @@ type Sources struct {
 	DBPoolInUse      func() int64
 	OpenCircuits     func() []string // hosts whose circuit is open
 	InputQueue       func(ctx context.Context) (waiting int64, oldestAge time.Duration, err error)
+	InputDeadLetters func(ctx context.Context) (waiting int64, oldestAge time.Duration, err error)
 }
 
 // Observe registers the gauges read from s on every scrape. The backlog
@@ -70,26 +71,16 @@ func (m *Metrics) Observe(s Sources) error {
 		}
 	}
 	if s.InputQueue != nil {
-		waiting, err := m.meter.Int64ObservableGauge("webhook.input_events_waiting",
-			metric.WithDescription("Events in the input queue not yet fanned out."))
-		if err != nil {
+		if err := m.observeQueue(s.InputQueue,
+			"webhook.input_events_waiting", "Events in the input queue not yet fanned out.",
+			"webhook.input_oldest_event_age", "Age of the oldest event in the input queue (ingest falling behind)."); err != nil {
 			return err
 		}
-		age, err := m.meter.Float64ObservableGauge("webhook.input_oldest_event_age", metric.WithUnit("s"),
-			metric.WithDescription("Age of the oldest event in the input queue (ingest falling behind)."))
-		if err != nil {
-			return err
-		}
-		if _, err := m.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-			n, oldest, err := s.InputQueue(ctx)
-			if err != nil {
-				m.Error(ctx, "metrics")
-				return nil
-			}
-			o.ObserveInt64(waiting, n)
-			o.ObserveFloat64(age, oldest.Seconds())
-			return nil
-		}, waiting, age); err != nil {
+	}
+	if s.InputDeadLetters != nil {
+		if err := m.observeQueue(s.InputDeadLetters,
+			"webhook.input_dead_letters", "Events the dispatcher could not fan out (malformed or failing repeatedly).",
+			"webhook.input_dead_letter_oldest_age", "Age of the oldest event in the input dead-letter queue."); err != nil {
 			return err
 		}
 	}
@@ -126,4 +117,29 @@ func (m *Metrics) Observe(s Sources) error {
 		}
 	}
 	return nil
+}
+
+// observeQueue registers a queue's size and oldest-item age as two gauges
+// fed by one callback, so a scrape costs one query.
+func (m *Metrics) observeQueue(read func(context.Context) (int64, time.Duration, error),
+	countName, countDesc, ageName, ageDesc string) error {
+	count, err := m.meter.Int64ObservableGauge(countName, metric.WithDescription(countDesc))
+	if err != nil {
+		return err
+	}
+	age, err := m.meter.Float64ObservableGauge(ageName, metric.WithUnit("s"), metric.WithDescription(ageDesc))
+	if err != nil {
+		return err
+	}
+	_, err = m.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		n, oldest, err := read(ctx)
+		if err != nil {
+			m.Error(ctx, "metrics")
+			return nil // skip this scrape's values; the scrape itself still succeeds
+		}
+		o.ObserveInt64(count, n)
+		o.ObserveFloat64(age, oldest.Seconds())
+		return nil
+	}, count, age)
+	return err
 }

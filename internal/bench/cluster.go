@@ -71,7 +71,7 @@ func newEnv(ctx context.Context, adminURL string) (*env, error) {
 		return nil, err
 	}
 	e.st = store.New(e.pool)
-	e.queue = event.NewPGQueue(e.pool, timing.visibility)
+	e.queue = event.NewPGQueue(e.pool, timing.visibility, 5)
 	return e, nil
 }
 
@@ -138,7 +138,7 @@ func (e *env) startReplica(rc replicaConfig) (*replica, error) {
 	}
 	loop := scheduler.New(claimer, func(ctx context.Context, d store.Delivery) { _, _ = w.Process(ctx, d) },
 		scheduler.Options{Workers: rc.workers, AccountsPerTick: 50, Quantum: 10, Lease: timing.lease, Idle: timing.idle})
-	disp := dispatcher.New(event.NewPGQueue(pool, timing.visibility), st,
+	disp := dispatcher.New(event.NewPGQueue(pool, timing.visibility, 5), st,
 		dispatcher.NewWebhookCache(30*time.Second, nil, st.ActiveWebhooks), 500, nil)
 	reap := reaper.New(st, timing.maxAttempts, 1000, timing.reaperInterval, nil)
 
