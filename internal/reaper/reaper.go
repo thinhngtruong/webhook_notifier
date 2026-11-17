@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/store"
 )
 
@@ -16,12 +17,14 @@ type Reaper struct {
 	maxAttempts int
 	batch       int
 	interval    time.Duration
+	metrics     *metrics.Metrics
 }
 
 // New returns a Reaper that resets up to batch leases per statement and
 // moves deliveries that already used maxAttempts to dead.
-func New(st *store.Store, maxAttempts, batch int, interval time.Duration) *Reaper {
-	return &Reaper{st: st, maxAttempts: maxAttempts, batch: batch, interval: interval}
+// m may be nil.
+func New(st *store.Store, maxAttempts, batch int, interval time.Duration, m *metrics.Metrics) *Reaper {
+	return &Reaper{st: st, maxAttempts: maxAttempts, batch: batch, interval: interval, metrics: m}
 }
 
 // ReapOnce resets every currently expired lease, batch by batch, so a
@@ -58,6 +61,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
+			r.metrics.Error(ctx, "reaper")
 			slog.Error("reap expired leases", "err", err)
 		}
 		if res.Reset > 0 || res.Dead > 0 {

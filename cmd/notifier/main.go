@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webhook-notifier/internal/config"
+	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/reaper"
 	"webhook-notifier/internal/replay"
@@ -80,7 +81,20 @@ func run() error {
 		return err
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: healthHandler(pool), ReadHeaderTimeout: 5 * time.Second}
+	m, metricsHandler, err := metrics.NewPrometheus(metrics.Options{Tier: cfg.Tier})
+	if err != nil {
+		return err
+	}
+	st := store.New(pool)
+	sources := metrics.Sources{
+		Backlog: func(ctx context.Context) (metrics.Backlog, error) {
+			b, err := st.Backlog(ctx)
+			return metrics.Backlog{Pending: b.Pending, ActiveAccounts: b.ActiveAccounts, OldestDueAge: b.OldestDueAge}, err
+		},
+		DBPoolInUse: func() int64 { return int64(pool.Stat().AcquiredConns()) },
+	}
+
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpHandler(pool, metricsHandler), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server", "err", err)
@@ -99,11 +113,11 @@ func run() error {
 	// its in-flight work.
 	var roles sync.WaitGroup
 	if cfg.Worker {
-		st := store.New(pool)
 		if cfg.AllowHTTP || cfg.AllowPrivateNetworks {
 			slog.Warn("partner URL safety checks relaxed; local development only",
 				"allow_http", cfg.AllowHTTP, "allow_private_networks", cfg.AllowPrivateNetworks)
 		}
+		breaker := partnerguard.NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown, nil)
 		sender := worker.NewSender(worker.SenderOptions{
 			Timeout: cfg.HTTPTimeout, AllowHTTP: cfg.AllowHTTP, AllowPrivateNetworks: cfg.AllowPrivateNetworks,
 		})
@@ -113,7 +127,8 @@ func run() error {
 			},
 			MaxAttempts: cfg.MaxAttempts,
 			Limiter:     partnerguard.NewLimiter(cfg.PerHostConcurrency),
-			Breaker:     partnerguard.NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown, nil),
+			Breaker:     breaker,
+			Metrics:     m,
 		})
 		loop := scheduler.New(st, func(ctx context.Context, d store.Delivery) {
 			if _, err := w.Process(ctx, d); err != nil {
@@ -122,8 +137,10 @@ func run() error {
 			}
 		}, scheduler.Options{
 			Workers: cfg.Workers, AccountsPerTick: cfg.AccountsPerTick, Quantum: cfg.Quantum,
-			Lease: cfg.LeaseDuration, Idle: cfg.ClaimInterval,
+			Lease: cfg.LeaseDuration, Idle: cfg.ClaimInterval, Metrics: m,
 		})
+		sources.WorkerSlotsInUse = loop.InFlight
+		sources.OpenCircuits = breaker.OpenHosts
 		roles.Go(func() {
 			if err := loop.Run(ctx); err != nil {
 				slog.Error("claim loop", "err", err)
@@ -132,12 +149,16 @@ func run() error {
 	}
 
 	if cfg.Reaper {
-		r := reaper.New(store.New(pool), cfg.MaxAttempts, cfg.ReaperBatch, cfg.ReaperInterval)
+		r := reaper.New(st, cfg.MaxAttempts, cfg.ReaperBatch, cfg.ReaperInterval, m)
 		roles.Go(func() {
 			if err := r.Run(ctx); err != nil {
 				slog.Error("reaper", "err", err)
 			}
 		})
+	}
+
+	if err := m.Observe(sources); err != nil {
+		return err
 	}
 
 	<-ctx.Done()
@@ -173,8 +194,9 @@ func connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	}
 }
 
-func healthHandler(pool *pgxpool.Pool) http.Handler {
+func httpHandler(pool *pgxpool.Pool, metricsHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metricsHandler)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()

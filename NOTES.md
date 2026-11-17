@@ -10,6 +10,7 @@ Time spent per step (for the total estimate).
 | 4. Scheduler + worker | 1.5h | Backoff, classification, Retry-After, signing, sender, claim returns target, worker acks, claim loop, wiring. Test-first; concurrency tests mutation-checked. Lost ~10 min to a hanging test (httptest handler waiting on an unread request context). Shared-queue baseline mode deferred to step 8 (benchmarks). |
 | 5. Reaper + dead letters | 0.75h | Batched reaper pass + periodic loop, reaper batch config, replay command (refuses an empty filter without --all), smoke check of crash recovery and replay on the compose stack. Fixed a flaky store test that compared a Postgres timestamp with the host clock (Docker VM clock runs ahead). |
 | 6. Partner protection | 1h | Postpone (refunds the attempt), per-host limiter, circuit breaker, SSRF dial guard + HTTPS-only, worker integration, config. A mutation check found an untested ordering (breaker before limiter loses the half-open probe); added the test. Retry budget deferred. |
+| 7. Metrics (OpenTelemetry) | 1.25h | Switched from client_golang to the OTel SDK + Prometheus exporter at the user's request. Instruments named per design.md, scrape-tested; backlog gauges from one query; worker/dispatcher/claim/reaper instrumented; tier via LARGE_ACCOUNTS; Prometheus profile verified scraping both replicas. Tracing moved to a later step. |
 
 ## Process
 

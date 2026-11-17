@@ -36,7 +36,7 @@ func TestProcessBatchDoesNotAckOnFailure(t *testing.T) {
 			clk := &fakeClock{t: time.Unix(0, 0)}
 			q := event.NewMemQueue(time.Minute, clk.Now)
 			q.Publish(evt("e1", "subscriber.created", "account-1"))
-			d := dispatcher.New(q, tt.st, dispatcher.NewWebhookCache(time.Minute, clk.Now, tt.hooks), 10)
+			d := dispatcher.New(q, tt.st, dispatcher.NewWebhookCache(time.Minute, clk.Now, tt.hooks), 10, nil)
 
 			if _, err := d.ProcessBatch(context.Background()); !errors.Is(err, boom) {
 				t.Fatalf("err = %v, want %v", err, boom)
@@ -54,7 +54,7 @@ func TestProcessBatchAcksEventsWithNoSubscribedWebhook(t *testing.T) {
 	f.hook(t, "account-1", "subscriber.unsubscribed")
 	f.queue.Publish(evt("e1", "subscriber.created", "account-1"), evt("e2", "subscriber.created", "account-none"))
 
-	n, err := dispatcher.New(f.queue, f.st, f.cache, 10).ProcessBatch(f.ctx)
+	n, err := dispatcher.New(f.queue, f.st, f.cache, 10, nil).ProcessBatch(f.ctx)
 	if err != nil || n != 2 {
 		t.Fatalf("ProcessBatch = %d, %v", n, err)
 	}

@@ -707,3 +707,32 @@ func TestPostponeDoesNotConsumeAnAttempt(t *testing.T) {
 		t.Fatalf("second postpone with the same lease = %v, want ErrStale", err)
 	}
 }
+
+func TestBacklog(t *testing.T) {
+	e := newEnv(t)
+	if b, err := e.s.Backlog(e.ctx); err != nil || b != (store.BacklogStats{}) {
+		t.Fatalf("empty backlog = %+v, %v", b, err)
+	}
+
+	e.fanOut(e.events("account-a", "a", 3, now))
+	e.fanOut(e.events("account-b", "b", 2, now))
+	d := e.claim(store.ClaimParams{Accounts: 1, Quantum: 2, Limit: 2})        // account-a: 2 in flight, 1 pending
+	if err := e.s.AckRetry(e.ctx, d[0].Lease(), time.Hour, "x"); err != nil { // 1 pending, not due
+		t.Fatal(err)
+	}
+	// The oldest due delivery has been waiting 10s (database clock).
+	if _, err := e.pool.Exec(e.ctx, `UPDATE deliveries SET next_attempt_at = now() - interval '10 seconds' WHERE event_id = 'b-0'`); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.s.Backlog(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Pending != 4 || b.ActiveAccounts != 2 {
+		t.Errorf("backlog = %+v, want 4 pending in 2 active accounts", b)
+	}
+	if b.OldestDueAge < 9*time.Second || b.OldestDueAge > 15*time.Second {
+		t.Errorf("oldest due age = %v, want ~10s", b.OldestDueAge)
+	}
+}

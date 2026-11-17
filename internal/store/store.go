@@ -91,3 +91,10 @@ func (d Delivery) Lease() Lease {
 
 // seconds converts a duration to the float seconds make_interval expects.
 func seconds(d time.Duration) float64 { return d.Seconds() }
+
+// BacklogStats is the pipeline-wide backlog, for metrics.
+type BacklogStats struct {
+	Pending        int64
+	ActiveAccounts int64
+	OldestDueAge   time.Duration // 0 when nothing is due
+}

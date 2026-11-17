@@ -39,3 +39,33 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestCause(t *testing.T) {
+	tests := []struct {
+		status int
+		err    error
+		want   string
+	}{
+		{200, nil, "http_2xx"},
+		{302, nil, "http_3xx"},
+		{404, nil, "http_4xx"},
+		{410, nil, "http_410"},
+		{429, nil, "http_429"},
+		{503, nil, "http_5xx"},
+		{0, context.DeadlineExceeded, "timeout"},
+		{0, &timeoutErr{}, "timeout"},
+		{0, ErrBlockedTarget, "blocked"},
+		{0, errors.New("connection refused"), "connection"},
+	}
+	for _, tt := range tests {
+		if got := Cause(tt.status, tt.err); got != tt.want {
+			t.Errorf("Cause(%d, %v) = %q, want %q", tt.status, tt.err, got, tt.want)
+		}
+	}
+}
+
+// timeoutErr is what net/http returns when the client timeout fires.
+type timeoutErr struct{}
+
+func (*timeoutErr) Error() string { return "Client.Timeout exceeded" }
+func (*timeoutErr) Timeout() bool { return true }

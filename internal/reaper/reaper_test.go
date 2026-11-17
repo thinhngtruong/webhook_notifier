@@ -3,9 +3,12 @@ package reaper_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"webhook-notifier/internal/metrics"
+	"webhook-notifier/internal/metrics/metricstest"
 	"webhook-notifier/internal/reaper"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/testpg"
@@ -43,7 +46,7 @@ func TestReapOnceDrainsAllExpiredLeasesInBatches(t *testing.T) {
 	live := seedLeased(t, st, "account-busy", 2, time.Hour)
 	time.Sleep(100 * time.Millisecond) // let the short leases expire (database time)
 
-	res, err := reaper.New(st, 10, 2, time.Second).ReapOnce(ctx)
+	res, err := reaper.New(st, 10, 2, time.Second, nil).ReapOnce(ctx)
 	if err != nil || res.Reset != 5 || res.Dead != 0 {
 		t.Fatalf("ReapOnce = %+v, %v; want 5 reset with batch size 2", res, err)
 	}
@@ -65,7 +68,7 @@ func TestRunReapsPeriodicallyAndStopsOnCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- reaper.New(st, 10, 100, 20*time.Millisecond).Run(ctx) }()
+	go func() { done <- reaper.New(st, 10, 100, 20*time.Millisecond, nil).Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -88,4 +91,25 @@ func TestRunReapsPeriodicallyAndStopsOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not stop after cancel")
 	}
+}
+
+func TestRunCountsReaperErrors(t *testing.T) {
+	pool := testpg.New(t)
+	st := store.New(pool)
+	pool.Close() // every query now fails
+	m, scrape := metricstest.New(t, metrics.Options{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reaper.New(st, 10, 100, 5*time.Millisecond, m).Run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(scrape(), `webhook_errors_total{component="reaper"}`) {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("reaper errors not counted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
 }

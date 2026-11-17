@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"webhook-notifier/internal/metrics"
+	"webhook-notifier/internal/metrics/metricstest"
 	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/testpg"
@@ -258,5 +260,83 @@ func TestProcessDoesNotLoseTheProbeToTheLimiter(t *testing.T) {
 	out, err := w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false))
 	if err != nil || out == worker.Postponed || p.hits.Load() != 2 {
 		t.Fatalf("probe after the limit cleared = %v, %v, partner hits %d; want the probe sent", out, err, p.hits.Load())
+	}
+}
+
+func TestProcessRecordsMetrics(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		attempt  int
+		disabled bool
+		circuit  bool // circuit already open for the host
+		throttle bool // host already at its limit
+		want     []string
+		absent   []string
+	}{
+		{name: "first attempt succeeds", status: 200, attempt: 1, want: []string{
+			`webhook_deliveries_total{cause="http_2xx",outcome="succeeded"} 1`,
+			`webhook_first_attempt_latency_seconds_count{tier="small"} 1`,
+			`webhook_http_duration_seconds_count{result="success"} 1`,
+			`webhook_end_to_end_seconds_count{outcome="succeeded"} 1`,
+		}},
+		{name: "retry is not final and not a first attempt", status: 503, attempt: 2, want: []string{
+			`webhook_deliveries_total{cause="http_5xx",outcome="retry"} 1`,
+			`webhook_http_duration_seconds_count{result="failure"} 1`,
+		}, absent: []string{"webhook_first_attempt_latency_seconds_count", "webhook_end_to_end_seconds_count"}},
+		{name: "4xx is final", status: 400, attempt: 1, want: []string{
+			`webhook_deliveries_total{cause="http_4xx",outcome="dead"} 1`,
+			`webhook_end_to_end_seconds_count{outcome="dead"} 1`,
+		}},
+		{name: "disabled webhook sends nothing", status: 200, attempt: 1, disabled: true, want: []string{
+			`webhook_deliveries_total{cause="webhook_disabled",outcome="dead"} 1`,
+			`webhook_end_to_end_seconds_count{outcome="dead"} 1`,
+		}, absent: []string{"webhook_http_duration_seconds_count", "webhook_first_attempt_latency_seconds_count"}},
+		{name: "open circuit postpones", status: 200, attempt: 1, circuit: true, want: []string{
+			`webhook_deliveries_total{cause="circuit_open",outcome="postponed"} 1`,
+		}, absent: []string{"webhook_http_duration_seconds_count", "webhook_first_attempt_latency_seconds_count"}},
+		{name: "host at limit postpones", status: 200, attempt: 1, throttle: true, want: []string{
+			`webhook_deliveries_total{cause="throttled",outcome="postponed"} 1`,
+			`webhook_endpoint_throttled_total 1`,
+		}, absent: []string{"webhook_http_duration_seconds_count"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := store.New(testpg.New(t))
+			p := newPartner(t, tt.status, "")
+			host := strings.TrimPrefix(p.srv.URL, "http://")
+			m, scrape := metricstest.New(t, metrics.Options{})
+
+			breaker := partnerguard.NewBreaker(1, time.Minute, nil)
+			if tt.circuit {
+				breaker.Allow(host)
+				breaker.Record(host, false)
+			}
+			limiter := partnerguard.NewLimiter(1)
+			if tt.throttle {
+				release, _ := limiter.TryAcquire(host)
+				defer release()
+			}
+			w := worker.New(st, worker.NewSender(worker.SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}), worker.Options{
+				Backoff:     worker.Backoff{Base: 30 * time.Second, Factor: 3, Max: 8 * time.Hour, Jitter: 0.2},
+				MaxAttempts: 10, Rand: func() float64 { return 0.5 },
+				Limiter: limiter, Breaker: breaker, Metrics: m,
+			})
+			if _, err := w.Process(context.Background(), claimOne(t, st, p.srv.URL, tt.attempt, tt.disabled)); err != nil {
+				t.Fatal(err)
+			}
+
+			out := scrape()
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %s", want)
+				}
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(out, absent) {
+					t.Errorf("unexpected %s", absent)
+				}
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,9 @@ type Config struct {
 	BackoffMax    time.Duration
 	MaxAttempts   int
 	JitterRatio   float64
+
+	// Metrics: accounts labelled tier="large"; everyone else is "small".
+	LargeAccounts []string
 
 	// HTTP delivery.
 	HTTPTimeout time.Duration
@@ -115,6 +119,10 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.BoolVar(&c.AllowPrivateNetworks, "allow-private-networks", c.AllowPrivateNetworks, "LOCAL DEV ONLY: allow internal addresses (ALLOW_PRIVATE_NETWORKS)")
 	fs.DurationVar(&c.ReaperInterval, "reaper-interval", c.ReaperInterval, "how often expired leases are reset (REAPER_INTERVAL)")
 	fs.IntVar(&c.ReaperBatch, "reaper-batch", c.ReaperBatch, "expired leases reset per statement (REAPER_BATCH)")
+	fs.Func("large-accounts", "comma-separated accounts labelled tier=large in metrics (LARGE_ACCOUNTS)", func(v string) error {
+		c.LargeAccounts = splitList(v)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -196,6 +204,9 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	integer("MAX_ATTEMPTS", &c.MaxAttempts)
 	float("JITTER_RATIO", &c.JitterRatio)
 	duration("HTTP_TIMEOUT", &c.HTTPTimeout)
+	if v := getenv("LARGE_ACCOUNTS"); v != "" {
+		c.LargeAccounts = splitList(v)
+	}
 	integer("PER_HOST_CONCURRENCY", &c.PerHostConcurrency)
 	integer("BREAKER_THRESHOLD", &c.BreakerThreshold)
 	duration("BREAKER_COOLDOWN", &c.BreakerCooldown)
@@ -244,4 +255,25 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+// Tier returns the latency tier label for an account.
+func (c Config) Tier(accountID string) string {
+	for _, a := range c.LargeAccounts {
+		if a == accountID {
+			return "large"
+		}
+	}
+	return "small"
+}
+
+// splitList parses a comma-separated list, dropping blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

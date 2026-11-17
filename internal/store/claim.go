@@ -173,3 +173,25 @@ func (s *Store) GetDelivery(ctx context.Context, id UUID, eventTime time.Time) (
 	}
 	return d, nil
 }
+
+// Backlog returns pending, active-account and oldest-due-age figures in
+// one query.
+//
+// The counts use the partial pending index and the ring index, so their
+// cost tracks the backlog, not the table. Called once per metrics scrape.
+func (s *Store) Backlog(ctx context.Context) (BacklogStats, error) {
+	var b BacklogStats
+	var ageSeconds float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM deliveries WHERE status = 'pending'),
+		       (SELECT count(*) FROM account_queues WHERE active),
+		       COALESCE(EXTRACT(EPOCH FROM now() - (
+		           SELECT min(next_attempt_at) FROM deliveries
+		            WHERE status = 'pending' AND next_attempt_at <= now())), 0)::float8`,
+	).Scan(&b.Pending, &b.ActiveAccounts, &ageSeconds)
+	if err != nil {
+		return BacklogStats{}, fmt.Errorf("backlog: %w", err)
+	}
+	b.OldestDueAge = time.Duration(ageSeconds * float64(time.Second))
+	return b, nil
+}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"webhook-notifier/internal/event"
+	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/store"
 )
 
@@ -23,11 +24,13 @@ type Dispatcher struct {
 	st        Store
 	hooks     *WebhookCache
 	batchSize int
+	metrics   *metrics.Metrics
 }
 
-// New returns a Dispatcher reading up to batchSize events at a time.
-func New(src event.Source, st Store, hooks *WebhookCache, batchSize int) *Dispatcher {
-	return &Dispatcher{src: src, st: st, hooks: hooks, batchSize: batchSize}
+// New returns a Dispatcher reading up to batchSize events at a time. m may
+// be nil.
+func New(src event.Source, st Store, hooks *WebhookCache, batchSize int, m *metrics.Metrics) *Dispatcher {
+	return &Dispatcher{src: src, st: st, hooks: hooks, batchSize: batchSize, metrics: m}
 }
 
 // ProcessBatch handles one batch: it receives events, inserts one delivery
@@ -36,6 +39,7 @@ func New(src event.Source, st Store, hooks *WebhookCache, batchSize int) *Dispat
 func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 	events, err := d.src.Receive(ctx, d.batchSize)
 	if err != nil {
+		d.metrics.Error(ctx, "event_source")
 		return 0, fmt.Errorf("receive events: %w", err)
 	}
 	if len(events) == 0 {
@@ -48,6 +52,7 @@ func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 		ids[i] = e.ID
 		hooks, err := d.hooks.Get(ctx, e.AccountID)
 		if err != nil {
+			d.metrics.Error(ctx, "webhook_lookup")
 			return 0, fmt.Errorf("webhooks for %s: %w", e.AccountID, err)
 		}
 		for _, h := range hooks {
@@ -62,11 +67,14 @@ func (d *Dispatcher) ProcessBatch(ctx context.Context) (int, error) {
 	}
 
 	if _, err := d.st.FanOut(ctx, deliveries); err != nil {
+		d.metrics.Error(ctx, "fanout")
 		return 0, err
 	}
 	if err := d.src.Ack(ctx, ids); err != nil {
+		d.metrics.Error(ctx, "event_source")
 		return 0, fmt.Errorf("ack %d events: %w", len(ids), err)
 	}
+	d.metrics.EventsConsumed(ctx, len(events))
 	return len(events), nil
 }
 

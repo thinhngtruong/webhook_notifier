@@ -7,7 +7,7 @@ Proof of concept for a webhook delivery service: it consumes subscriber events, 
 ## Hard rules
 
 - Never mention any real company or product brand in code, comments, docs, commit messages or test data. Use neutral names (`webhook-notifier`, `acme`, `account-123`).
-- Stack: Go 1.27 (go.mod pins 1.27.4) and PostgreSQL 16. Keep dependencies few: `pgx/v5` for Postgres, `prometheus/client_golang` for metrics, the standard library for HTTP and logging (`log/slog`). Ask before adding anything else.
+- Stack: Go 1.27 (go.mod pins 1.27.4) and PostgreSQL 16. Keep dependencies few: `pgx/v5` for Postgres, OpenTelemetry for metrics (`go.opentelemetry.io/otel` API + `sdk/metric`, exported on `/metrics` through `exporters/prometheus`, with `prometheus/client_golang` only for the HTTP handler), the standard library for HTTP and logging (`log/slog`). Ask before adding anything else.
 - Semantics: at-least-once delivery, no ordering guarantees. Do not add ordering or exactly-once machinery.
 - Everything must run locally with one command (`make up`) and no cloud accounts.
 
@@ -32,7 +32,7 @@ internal/
   scheduler/   claim loop; also a "shared queue" mode used as the benchmark baseline
   worker/      HTTP delivery, signing, response classification, backoff
   partnerguard/ per-endpoint semaphore + circuit breaker
-  metrics/
+  metrics/     OpenTelemetry instruments + Prometheus exporter for /metrics
 migrations/    plain SQL files, applied on startup
 docs/          design.md, bottlenecks.md, img/, diagrams/ (Excalidraw sources)
 docker-compose.yml, Makefile, README.md
@@ -48,9 +48,10 @@ Work in this order. Finish each step with passing tests and a small commit befor
 4. **Scheduler + worker**: claim loop sized to free worker slots, HTTP client (10s timeout, no redirects), signing, response classification table, backoff (30s × 3, cap 8h, 10 attempts, ±20% jitter, honour `Retry-After`).
 5. **Reaper and dead letters**: lease expiry, dead-letter replay command.
 6. **Partner protection**: per-host semaphore, circuit breaker that postpones without consuming attempts, SSRF guard on the dialer.
-7. **Metrics**: the metrics listed in design.md section 5, exposed on `/metrics`.
+7. **Metrics**: the metrics listed in design.md section 5, recorded with OpenTelemetry and exposed on `/metrics` (Prometheus format, no collector).
 8. **Fake producer and partner**, then **benchmarks**: the four scenarios in design.md section 6. The headline result is small-account p99 latency in shared-queue mode vs fair mode during a whale burst. `make bench` must print a readable table.
 9. **README**: how to run, assumptions, benchmark results, known limitations, and what I would do next.
+10. **Tracing** (later): OpenTelemetry spans from the event through fan-out, claim and the HTTP attempt (trace context stored on the delivery row), exported over OTLP to a local trace viewer.
 
 ## Development workflow: TDD (mandatory)
 

@@ -2,12 +2,16 @@ package scheduler_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"webhook-notifier/internal/metrics"
+	"webhook-notifier/internal/metrics/metricstest"
 	"webhook-notifier/internal/scheduler"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/testpg"
@@ -151,5 +155,63 @@ func TestRunStopsClaimingAndFinishesInFlightOnShutdown(t *testing.T) {
 	}
 	if finishedWithLiveCtx.Load() != 2 {
 		t.Errorf("%d of 2 in-flight deliveries finished with a live context", finishedWithLiveCtx.Load())
+	}
+}
+
+func TestInFlightReportsBusySlots(t *testing.T) {
+	st := store.New(testpg.New(t))
+	seed(t, st, 1, 3)
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	l := scheduler.New(st, func(ctx context.Context, d store.Delivery) {
+		started <- struct{}{}
+		<-release
+	}, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx) }()
+	for range 3 {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("deliveries never started")
+		}
+	}
+	if n := l.InFlight(); n != 3 {
+		t.Errorf("InFlight = %d while 3 deliveries run, want 3", n)
+	}
+	close(release)
+	cancel()
+	<-done
+	if n := l.InFlight(); n != 0 {
+		t.Errorf("InFlight = %d after shutdown, want 0", n)
+	}
+}
+
+type failingClaimer struct{ calls atomic.Int64 }
+
+func (c *failingClaimer) Claim(context.Context, store.ClaimParams) ([]store.Delivery, error) {
+	c.calls.Add(1)
+	return nil, errors.New("db down")
+}
+
+func TestRunCountsClaimErrors(t *testing.T) {
+	m, scrape := metricstest.New(t, metrics.Options{})
+	c := &failingClaimer{}
+	o := opts
+	o.Metrics = m
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- scheduler.New(c, func(context.Context, store.Delivery) {}, o).Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for c.calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	if out := scrape(); !strings.Contains(out, `webhook_errors_total{component="claim"}`) {
+		t.Fatalf("claim errors not counted:\n%s", out)
 	}
 }

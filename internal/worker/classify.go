@@ -1,6 +1,10 @@
 package worker
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 // Outcome is what to do with a delivery after an attempt.
 type Outcome int
@@ -29,5 +33,25 @@ func Classify(status int, err error) Outcome {
 		return Gone
 	default:
 		return Dead
+	}
+}
+
+// Cause labels an attempt's result for metrics: which kind of partner
+// response or transport failure it was.
+func Cause(status int, err error) string {
+	var timeout interface{ Timeout() bool }
+	switch {
+	case errors.Is(err, ErrBlockedTarget):
+		return "blocked"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
+		return "timeout"
+	case err != nil:
+		return "connection"
+	case status == 410:
+		return "http_410"
+	case status == 429:
+		return "http_429"
+	default:
+		return fmt.Sprintf("http_%dxx", status/100)
 	}
 }

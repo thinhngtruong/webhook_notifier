@@ -71,3 +71,18 @@ func TestBreakerHalfOpensWithASingleProbe(t *testing.T) {
 		}
 	}
 }
+
+func TestBreakerOpenHosts(t *testing.T) {
+	b, _ := newTestBreaker()
+	fail(b, "a.example", 3) // open
+	fail(b, "b.example", 1) // still closed
+	got := b.OpenHosts()
+	if len(got) != 1 || got[0] != "a.example" {
+		t.Fatalf("OpenHosts = %v, want [a.example]", got)
+	}
+	b.Allow("a.example")
+	b.Record("a.example", true)
+	if got := b.OpenHosts(); len(got) != 0 {
+		t.Fatalf("after recovery OpenHosts = %v", got)
+	}
+}

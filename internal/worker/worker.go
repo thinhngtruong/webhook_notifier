@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/store"
 )
@@ -21,6 +22,7 @@ type Options struct {
 	Rand        func() float64        // uniform in [0, 1); nil: math/rand
 	Limiter     *partnerguard.Limiter // per-host concurrency limit; nil: none
 	Breaker     *partnerguard.Breaker // per-host circuit breaker; nil: none
+	Metrics     *metrics.Metrics      // nil: not recorded
 }
 
 // Worker performs one delivery attempt and records its outcome.
@@ -33,6 +35,7 @@ type Worker struct {
 	rand    func() float64
 	limiter *partnerguard.Limiter
 	breaker *partnerguard.Breaker
+	metrics *metrics.Metrics
 }
 
 // New returns a Worker.
@@ -44,7 +47,7 @@ func New(st *store.Store, sender *Sender, opts Options) *Worker {
 		opts.Rand = rand.Float64
 	}
 	return &Worker{st: st, sender: sender, backoff: opts.Backoff, max: opts.MaxAttempts, now: opts.Now, rand: opts.Rand,
-		limiter: opts.Limiter, breaker: opts.Breaker}
+		limiter: opts.Limiter, breaker: opts.Breaker, metrics: opts.Metrics}
 }
 
 // Process sends a claimed delivery and acks the result. It returns the
@@ -52,11 +55,24 @@ func New(st *store.Store, sender *Sender, opts Options) *Worker {
 // (the reaper took the delivery back) is logged and not an error: the
 // delivery is already scheduled again.
 func (w *Worker) Process(ctx context.Context, d store.Delivery) (Outcome, error) {
+	outcome, cause, err := w.process(ctx, d)
+	w.metrics.Delivery(ctx, outcome.String(), cause)
+	switch outcome {
+	case Succeeded:
+		w.metrics.Finished(ctx, "succeeded", d.EventTime)
+	case Dead, Gone:
+		w.metrics.Finished(ctx, "dead", d.EventTime)
+	}
+	return outcome, err
+}
+
+// process does the work of Process and also returns the metrics cause.
+func (w *Worker) process(ctx context.Context, d store.Delivery) (Outcome, string, error) {
 	log := slog.With("delivery_id", d.ID.String(), "account_id", d.AccountID,
 		"webhook_id", d.WebhookID.String(), "attempt", d.Attempts)
 
 	if d.Target == nil || !d.Target.Active {
-		return Dead, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), "webhook disabled"))
+		return Dead, "webhook_disabled", w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), "webhook disabled"))
 	}
 
 	// Guards, limiter first: a half-open circuit hands out a single probe,
@@ -66,20 +82,28 @@ func (w *Worker) Process(ctx context.Context, d store.Delivery) (Outcome, error)
 	if w.limiter != nil {
 		release, ok := w.limiter.TryAcquire(host)
 		if !ok {
-			return Postponed, w.ack(ctx, log, w.st.Postpone(ctx, d.Lease(), throttleDelay, "endpoint at concurrency limit"))
+			w.metrics.Throttled(ctx)
+			return Postponed, "throttled", w.ack(ctx, log, w.st.Postpone(ctx, d.Lease(), throttleDelay, "endpoint at concurrency limit"))
 		}
 		defer release()
 	}
 	if w.breaker != nil {
 		if wait, ok := w.breaker.Allow(host); !ok {
-			return Postponed, w.ack(ctx, log, w.st.Postpone(ctx, d.Lease(), wait, "circuit open"))
+			return Postponed, "circuit_open", w.ack(ctx, log, w.st.Postpone(ctx, d.Lease(), wait, "circuit open"))
 		}
 	}
 
+	if d.Attempts == 1 {
+		w.metrics.FirstAttempt(ctx, d.AccountID, d.EventTime)
+	}
 	resp, sendErr := w.sender.Send(ctx, Request{
 		URL: d.Target.URL, Secret: d.Target.Secret, DeliveryID: d.ID.String(), Body: d.Payload,
 	})
 	outcome := Classify(resp.Status, sendErr)
+	cause := Cause(resp.Status, sendErr)
+	if !errors.Is(sendErr, ErrBlockedTarget) {
+		w.metrics.HTTPRequest(ctx, resp.Duration, outcome == Succeeded)
+	}
 	reason := fmt.Sprintf("HTTP %d", resp.Status)
 	if sendErr != nil {
 		reason = sendErr.Error()
@@ -89,25 +113,25 @@ func (w *Worker) Process(ctx context.Context, d store.Delivery) (Outcome, error)
 		w.breaker.Record(host, outcome != Retry)
 	}
 	log.Info("delivery attempt", "status", resp.Status, "duration_ms", resp.Duration.Milliseconds(),
-		"outcome", outcome.String(), "err", sendErr)
+		"outcome", outcome.String(), "cause", cause, "err", sendErr)
 
 	switch outcome {
 	case Succeeded:
-		return outcome, w.ack(ctx, log, w.st.AckSucceeded(ctx, d.Lease()))
+		return outcome, cause, w.ack(ctx, log, w.st.AckSucceeded(ctx, d.Lease()))
 	case Retry:
 		if d.Attempts >= w.max {
-			return Dead, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), "attempts exhausted: "+reason))
+			return Dead, cause, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), "attempts exhausted: "+reason))
 		}
 		retryAfter, _ := ParseRetryAfter(resp.RetryAfter, w.now())
 		delay := w.backoff.RetryDelay(d.Attempts, w.rand(), retryAfter)
-		return outcome, w.ack(ctx, log, w.st.AckRetry(ctx, d.Lease(), delay, reason))
+		return outcome, cause, w.ack(ctx, log, w.st.AckRetry(ctx, d.Lease(), delay, reason))
 	case Gone:
 		if err := w.st.DisableWebhook(ctx, d.WebhookID); err != nil {
-			return outcome, err
+			return outcome, cause, err
 		}
-		return outcome, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), reason))
+		return outcome, cause, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), reason))
 	default:
-		return outcome, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), reason))
+		return outcome, cause, w.ack(ctx, log, w.st.AckDead(ctx, d.Lease(), reason))
 	}
 }
 

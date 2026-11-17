@@ -73,7 +73,7 @@ func TestProcessBatchFansOutToSubscribedWebhooksOnly(t *testing.T) {
 		evt("e2", "subscriber.unsubscribed", "account-1"),
 		evt("e3", "subscriber.created", "account-2"),
 	)
-	d := dispatcher.New(f.queue, f.st, f.cache, 100)
+	d := dispatcher.New(f.queue, f.st, f.cache, 100, nil)
 	n, err := d.ProcessBatch(f.ctx)
 	if err != nil || n != 3 {
 		t.Fatalf("ProcessBatch = %d, %v; want 3 events", n, err)

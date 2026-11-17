@@ -6,8 +6,10 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/store"
 )
 
@@ -25,14 +27,16 @@ type Options struct {
 	AccountsPerTick int
 	Quantum         int
 	Lease           time.Duration
-	Idle            time.Duration // wait after a pass that claimed nothing
+	Idle            time.Duration    // wait after a pass that claimed nothing
+	Metrics         *metrics.Metrics // nil: not recorded
 }
 
 // Loop is the claim loop plus its worker pool.
 type Loop struct {
-	claimer Claimer
-	process Processor
-	opts    Options
+	claimer  Claimer
+	process  Processor
+	opts     Options
+	inFlight atomic.Int64
 }
 
 // New returns a Loop.
@@ -80,6 +84,7 @@ func (l *Loop) Run(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
+			l.opts.Metrics.Error(ctx, "claim")
 			slog.Error("claim failed", "err", err)
 		}
 
@@ -88,6 +93,8 @@ func (l *Loop) Run(ctx context.Context) error {
 			go func() {
 				defer wg.Done()
 				defer func() { <-slots }()
+				l.inFlight.Add(1)
+				defer l.inFlight.Add(-1)
 				l.process(work, d)
 			}()
 		}
@@ -101,3 +108,6 @@ func (l *Loop) Run(ctx context.Context) error {
 		}
 	}
 }
+
+// InFlight returns how many deliveries are being processed right now.
+func (l *Loop) InFlight() int64 { return l.inFlight.Load() }

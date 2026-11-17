@@ -76,3 +76,16 @@ func (b *Breaker) Record(host string, success bool) {
 		c.probing = false
 	}
 }
+
+// OpenHosts lists hosts whose circuit is open or half-open, for metrics.
+func (b *Breaker) OpenHosts() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var hosts []string
+	for host, c := range b.hosts {
+		if !c.openUntil.IsZero() {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}

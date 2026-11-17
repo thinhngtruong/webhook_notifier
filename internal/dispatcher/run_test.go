@@ -40,7 +40,7 @@ func TestRunRetriesAfterErrorAndStopsOnCancel(t *testing.T) {
 	q := event.NewMemQueue(0, nil)
 	q.Publish(evt("e1", "subscriber.created", "account-1"))
 	st := &flakyStore{stored: make(chan struct{}, 10)}
-	d := dispatcher.New(q, st, dispatcher.NewWebhookCache(time.Minute, nil, oneHook), 10)
+	d := dispatcher.New(q, st, dispatcher.NewWebhookCache(time.Minute, nil, oneHook), 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -331,6 +331,16 @@ Large accounts are expected to queue behind their own bursts, so they are measur
 | webhook_worker_slots_in_use, db_pool_in_use                  | Gauge          | Saturation of a replica                                 |
 | webhook_endpoint_throttled_total, webhook_circuit_open{host} | Counter, Gauge | Partner health and per-endpoint limits being hit        |
 | Input queue: age of oldest event, events waiting             | Gauge          | Ingest falling behind                                   |
+| webhook_events_consumed_total, webhook_errors_total{component} | Counter      | Ingest rate; our own errors (fanout, claim, reaper, event_source, webhook_lookup, metrics), kept apart from partner errors |
+
+Implementation notes (PoC):
+
+- Metrics are recorded with OpenTelemetry and exposed by its Prometheus exporter on /metrics of each replica (no collector). `make up-metrics` adds a Prometheus that scrapes both replicas.
+- webhook_deliveries_total causes: http_2xx, http_3xx, http_4xx, http_410, http_429, http_5xx, timeout, connection, blocked, circuit_open, throttled, webhook_disabled. Outcomes: succeeded, retry, dead, gone, postponed.
+- Tiers: the notifier does not know list sizes, so the tier label comes from configuration (LARGE_ACCOUNTS → "large", every other account → "small"). Enough for the whale-vs-small benchmark; production would read the tier from account data.
+- The backlog gauges come from one query per scrape per replica, using the partial indexes. webhook_circuit_open and webhook_worker_slots_in_use are per replica.
+- A replayed delivery restarts at attempt 1, so its attempt is counted as a "first attempt" with an old event time. Replays are rare admin actions; a dedicated flag on the row would fix it.
+- Not implemented yet: the input queue gauges (they need the Postgres-backed event queue, step 8).
 
 ### Logs and tracing
 

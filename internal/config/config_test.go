@@ -125,3 +125,19 @@ func TestPartnerGuardSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestTierFromLargeAccounts(t *testing.T) {
+	c, err := Load(nil, env(map[string]string{"LARGE_ACCOUNTS": "account-whale, account-big"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for account, want := range map[string]string{"account-whale": "large", "account-big": "large", "account-123": "small"} {
+		if got := c.Tier(account); got != want {
+			t.Errorf("Tier(%s) = %s, want %s", account, got, want)
+		}
+	}
+	c, _ = Load([]string{"--large-accounts=account-x"}, env(nil))
+	if c.Tier("account-x") != "large" {
+		t.Error("flag not applied")
+	}
+}
