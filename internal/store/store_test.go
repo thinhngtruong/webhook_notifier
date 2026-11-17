@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -173,9 +174,10 @@ func TestMigrationsConcurrentAndIdempotent(t *testing.T) {
 	if err := migrations.Apply(ctx, pool); err != nil {
 		t.Fatalf("re-apply: %v", err)
 	}
+	files, _ := filepath.Glob("../../migrations/*.sql")
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("schema_migrations rows = %d, %v; want 1", n, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil || n != len(files) || n == 0 {
+		t.Fatalf("schema_migrations rows = %d, %v; want one per migration file (%d)", n, err, len(files))
 	}
 }
 

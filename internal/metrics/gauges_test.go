@@ -43,3 +43,18 @@ func TestObservedGauges(t *testing.T) {
 		t.Errorf("backlog queried %d times for one scrape, want 1 (one query feeds three gauges)", backlogCalls)
 	}
 }
+
+func TestInputQueueGauges(t *testing.T) {
+	m, scrape := metricstest.New(t, metrics.Options{})
+	if err := m.Observe(metrics.Sources{
+		InputQueue: func(context.Context) (int64, time.Duration, error) { return 42, 3 * time.Second, nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := scrape()
+	for _, want := range []string{"webhook_input_events_waiting 42", "webhook_input_oldest_event_age_seconds 3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}

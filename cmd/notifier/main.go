@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webhook-notifier/internal/config"
+	"webhook-notifier/internal/dispatcher"
+	"webhook-notifier/internal/event"
 	"webhook-notifier/internal/metrics"
 	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/reaper"
@@ -104,14 +106,23 @@ func run() error {
 
 	slog.Info("notifier started",
 		"dispatcher", cfg.Dispatcher, "worker", cfg.Worker, "reaper", cfg.Reaper, "http_addr", cfg.HTTPAddr)
-	if cfg.Dispatcher {
-		// The dispatcher needs an event source shared with the producer process;
-		// the Postgres-backed queue arrives with the producer (step 8).
-		slog.Warn("dispatcher role idle: no cross-process event source yet")
-	}
 	// Roles run until ctx is cancelled; Wait returns once each has finished
 	// its in-flight work.
 	var roles sync.WaitGroup
+	queue := event.NewPGQueue(pool, cfg.EventVisibility)
+	sources.InputQueue = func(ctx context.Context) (int64, time.Duration, error) {
+		qs, err := queue.Stats(ctx)
+		return qs.Waiting, qs.OldestAge, err
+	}
+	if cfg.Dispatcher {
+		hooks := dispatcher.NewWebhookCache(cfg.WebhookCacheTTL, nil, st.ActiveWebhooks)
+		d := dispatcher.New(queue, st, hooks, cfg.DispatchBatchSize, m)
+		roles.Go(func() {
+			if err := d.Run(ctx, cfg.ClaimInterval); err != nil {
+				slog.Error("dispatcher", "err", err)
+			}
+		})
+	}
 	if cfg.Worker {
 		if cfg.AllowHTTP || cfg.AllowPrivateNetworks {
 			slog.Warn("partner URL safety checks relaxed; local development only",

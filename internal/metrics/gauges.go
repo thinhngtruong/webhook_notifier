@@ -22,6 +22,7 @@ type Sources struct {
 	WorkerSlotsInUse func() int64
 	DBPoolInUse      func() int64
 	OpenCircuits     func() []string // hosts whose circuit is open
+	InputQueue       func(ctx context.Context) (waiting int64, oldestAge time.Duration, err error)
 }
 
 // Observe registers the gauges read from s on every scrape. The backlog
@@ -58,6 +59,30 @@ func (m *Metrics) Observe(s Sources) error {
 			return nil
 		}, pending, active, oldest)
 		if err != nil {
+			return err
+		}
+	}
+	if s.InputQueue != nil {
+		waiting, err := m.meter.Int64ObservableGauge("webhook.input_events_waiting",
+			metric.WithDescription("Events in the input queue not yet fanned out."))
+		if err != nil {
+			return err
+		}
+		age, err := m.meter.Float64ObservableGauge("webhook.input_oldest_event_age", metric.WithUnit("s"),
+			metric.WithDescription("Age of the oldest event in the input queue (ingest falling behind)."))
+		if err != nil {
+			return err
+		}
+		if _, err := m.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+			n, oldest, err := s.InputQueue(ctx)
+			if err != nil {
+				m.Error(ctx, "metrics")
+				return nil
+			}
+			o.ObserveInt64(waiting, n)
+			o.ObserveFloat64(age, oldest.Seconds())
+			return nil
+		}, waiting, age); err != nil {
 			return err
 		}
 	}

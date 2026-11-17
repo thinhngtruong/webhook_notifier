@@ -24,6 +24,7 @@ type Config struct {
 	Reaper     bool
 
 	// Dispatcher.
+	EventVisibility   time.Duration // received events reappear after this unless acked
 	DispatchBatchSize int           // events per fan-out transaction
 	WebhookCacheTTL   time.Duration // per-account webhook cache
 
@@ -65,6 +66,7 @@ func Default() Config {
 		DatabaseURL:        "postgres://notifier:notifier@localhost:5432/notifier?sslmode=disable",
 		HTTPAddr:           ":8080",
 		DispatchBatchSize:  500,
+		EventVisibility:    30 * time.Second,
 		WebhookCacheTTL:    30 * time.Second,
 		AccountsPerTick:    50,
 		Quantum:            10,
@@ -100,6 +102,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.BoolVar(&c.Worker, "worker", c.Worker, "run the claim loop and worker pool")
 	fs.BoolVar(&c.Reaper, "reaper", c.Reaper, "run the lease reaper")
 	fs.IntVar(&c.DispatchBatchSize, "dispatch-batch", c.DispatchBatchSize, "events per fan-out transaction (DISPATCH_BATCH_SIZE)")
+	fs.DurationVar(&c.EventVisibility, "event-visibility", c.EventVisibility, "received events reappear after this unless acked (EVENT_VISIBILITY)")
 	fs.DurationVar(&c.WebhookCacheTTL, "webhook-cache-ttl", c.WebhookCacheTTL, "per-account webhook cache TTL (WEBHOOK_CACHE_TTL)")
 	fs.IntVar(&c.AccountsPerTick, "accounts-per-tick", c.AccountsPerTick, "accounts picked per claim pass (ACCOUNTS_PER_TICK)")
 	fs.IntVar(&c.Quantum, "quantum", c.Quantum, "max deliveries per account per pass (QUANTUM)")
@@ -192,6 +195,7 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	boolean("ROLE_WORKER", &c.Worker)
 	boolean("ROLE_REAPER", &c.Reaper)
 	integer("DISPATCH_BATCH_SIZE", &c.DispatchBatchSize)
+	duration("EVENT_VISIBILITY", &c.EventVisibility)
 	duration("WEBHOOK_CACHE_TTL", &c.WebhookCacheTTL)
 	integer("ACCOUNTS_PER_TICK", &c.AccountsPerTick)
 	integer("QUANTUM", &c.Quantum)
@@ -232,6 +236,7 @@ func (c Config) Validate() error {
 	}
 	check(c.DatabaseURL != "", "database URL is required")
 	check(c.DispatchBatchSize > 0, "dispatch batch size must be > 0")
+	check(c.EventVisibility > 0, "event visibility must be > 0")
 	check(c.WebhookCacheTTL > 0, "webhook cache TTL must be > 0")
 	check(c.AccountsPerTick > 0, "accounts per tick must be > 0")
 	check(c.Quantum > 0, "quantum must be > 0")

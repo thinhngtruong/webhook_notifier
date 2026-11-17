@@ -141,3 +141,17 @@ func TestTierFromLargeAccounts(t *testing.T) {
 		t.Error("flag not applied")
 	}
 }
+
+func TestEventVisibilitySetting(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil || c.EventVisibility != 30*time.Second {
+		t.Fatalf("default = %v, %v; want 30s", c.EventVisibility, err)
+	}
+	c, err = Load(nil, env(map[string]string{"EVENT_VISIBILITY": "5s"}))
+	if err != nil || c.EventVisibility != 5*time.Second {
+		t.Fatalf("env = %v, %v", c.EventVisibility, err)
+	}
+	if _, err := Load([]string{"--event-visibility=0s"}, env(nil)); err == nil {
+		t.Fatal("zero visibility accepted")
+	}
+}

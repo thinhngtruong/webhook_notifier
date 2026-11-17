@@ -18,7 +18,7 @@ Integration partners (third-party automation and CRM tools) register webhooks on
 
 Before starting, I went through a few open questions with the team. Here is what we agreed on:
 
-1.  Event source: can be mocked. A fake producer sits behind an EventSource interface, so the production source plugs in later.
+1.  Event source: can be mocked. A fake producer sits behind an EventSource interface, so the production source plugs in later. In the PoC the mock is an events_queue table with a visibility timeout (received events reappear unless acked, like a managed queue); the producer process publishes to it and dispatchers on every replica consume from it with SKIP LOCKED.
 
 2.  Delivery semantics: at-least-once, no ordering. Each request carries a delivery ID so receivers can drop duplicates.
 
@@ -340,7 +340,7 @@ Implementation notes (PoC):
 - Tiers: the notifier does not know list sizes, so the tier label comes from configuration (LARGE_ACCOUNTS → "large", every other account → "small"). Enough for the whale-vs-small benchmark; production would read the tier from account data.
 - The backlog gauges come from one query per scrape per replica, using the partial indexes. webhook_circuit_open and webhook_worker_slots_in_use are per replica.
 - A replayed delivery restarts at attempt 1, so its attempt is counted as a "first attempt" with an old event time. Replays are rare admin actions; a dedicated flag on the row would fix it.
-- Not implemented yet: the input queue gauges (they need the Postgres-backed event queue, step 8).
+- Input queue gauges: webhook_input_events_waiting and webhook_input_oldest_event_age_seconds, read from the mock queue.
 
 ### Logs and tracing
 
