@@ -27,7 +27,7 @@ func TestSendPostsSignedPayloadWithHeaders(t *testing.T) {
 	defer srv.Close()
 
 	at := time.Unix(1767225600, 0)
-	s := NewSender(time.Second, func() time.Time { return at })
+	s := NewSender(SenderOptions{Timeout: time.Second, Now: func() time.Time { return at }, AllowHTTP: true, AllowPrivateNetworks: true})
 	resp, err := s.Send(context.Background(), Request{
 		URL: srv.URL, Secret: "whsec_test", DeliveryID: "d-1", Body: []byte(`{"id":"e1"}`),
 	})
@@ -56,7 +56,7 @@ func TestSendDoesNotFollowRedirects(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	resp, err := NewSender(time.Second, nil).Send(context.Background(), Request{URL: srv.URL + "/hook", Body: []byte(`{}`)})
+	resp, err := NewSender(SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}).Send(context.Background(), Request{URL: srv.URL + "/hook", Body: []byte(`{}`)})
 	if err != nil || resp.Status != http.StatusFound || followed.Load() {
 		t.Fatalf("Send = %+v, %v, followed = %v", resp, err, followed.Load())
 	}
@@ -72,7 +72,7 @@ func TestSendTimesOut(t *testing.T) {
 	defer close(release) // runs before srv.Close
 
 	start := time.Now()
-	_, err := NewSender(100*time.Millisecond, nil).Send(context.Background(), Request{URL: srv.URL, Body: []byte(`{}`)})
+	_, err := NewSender(SenderOptions{Timeout: 100 * time.Millisecond, AllowHTTP: true, AllowPrivateNetworks: true}).Send(context.Background(), Request{URL: srv.URL, Body: []byte(`{}`)})
 	if err == nil {
 		t.Fatal("want a timeout error")
 	}

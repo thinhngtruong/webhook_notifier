@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/store"
 	"webhook-notifier/internal/testpg"
 	"webhook-notifier/internal/worker"
@@ -97,7 +99,7 @@ func TestProcessRecordsOutcome(t *testing.T) {
 			}
 			d := claimOne(t, st, url, tt.attempt, tt.disabled)
 
-			w := worker.New(st, worker.NewSender(time.Second, nil), worker.Options{
+			w := worker.New(st, worker.NewSender(worker.SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}), worker.Options{
 				Backoff:     worker.Backoff{Base: 30 * time.Second, Factor: 3, Max: 8 * time.Hour, Jitter: 0.2},
 				MaxAttempts: 10,
 				Rand:        func() float64 { return 0.5 },
@@ -143,11 +145,118 @@ func TestProcessDropsResultWhenLeaseWasLost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := worker.New(st, worker.NewSender(time.Second, nil), worker.Options{MaxAttempts: 10})
+	w := worker.New(st, worker.NewSender(worker.SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}), worker.Options{MaxAttempts: 10})
 	if _, err := w.Process(ctx, d); err != nil {
 		t.Fatalf("Process = %v, want nil for a lost lease", err)
 	}
 	if got, _ := st.GetDelivery(ctx, d.ID, d.EventTime); got.Status != store.StatusPending {
 		t.Fatalf("status = %s, want pending (untouched)", got.Status)
+	}
+}
+
+func guardedWorker(st *store.Store, l *partnerguard.Limiter, b *partnerguard.Breaker) *worker.Worker {
+	return worker.New(st, worker.NewSender(worker.SenderOptions{Timeout: time.Second, AllowHTTP: true, AllowPrivateNetworks: true}), worker.Options{
+		Backoff:     worker.Backoff{Base: 30 * time.Second, Factor: 3, Max: 8 * time.Hour, Jitter: 0.2},
+		MaxAttempts: 10, Rand: func() float64 { return 0.5 }, Limiter: l, Breaker: b,
+	})
+}
+
+func assertPostponedUnsent(t *testing.T, st *store.Store, d store.Delivery, maxDelay time.Duration, before time.Time) {
+	t.Helper()
+	got, _ := st.GetDelivery(context.Background(), d.ID, d.EventTime)
+	if got.Status != store.StatusPending || got.Attempts != d.Attempts-1 {
+		t.Fatalf("postponed delivery = status %s attempts %d; want pending with the attempt refunded (%d)", got.Status, got.Attempts, d.Attempts-1)
+	}
+	if delay := got.NextAttemptAt.Sub(before); delay > maxDelay+5*time.Second {
+		t.Fatalf("postponed for %v, want at most ~%v", delay, maxDelay)
+	}
+}
+
+func TestProcessPostponesWhileCircuitIsOpen(t *testing.T) {
+	st := store.New(testpg.New(t))
+	ctx := context.Background()
+	p := newPartner(t, 503, "")
+	w := guardedWorker(st, nil, partnerguard.NewBreaker(1, 30*time.Second, nil))
+
+	first := claimOne(t, st, p.srv.URL, 1, false)
+	if out, err := w.Process(ctx, first); err != nil || out != worker.Retry {
+		t.Fatalf("first = %v, %v", out, err)
+	}
+
+	second := claimOne(t, st, p.srv.URL, 1, false)
+	before := time.Now()
+	out, err := w.Process(ctx, second)
+	if err != nil || out != worker.Postponed {
+		t.Fatalf("with circuit open Process = %v, %v; want Postponed", out, err)
+	}
+	if p.hits.Load() != 1 {
+		t.Fatalf("partner hits = %d, want 1 (no request while open)", p.hits.Load())
+	}
+	assertPostponedUnsent(t, st, second, 30*time.Second, before)
+}
+
+func TestProcessPostponesWhenHostIsAtItsLimit(t *testing.T) {
+	st := store.New(testpg.New(t))
+	p := newPartner(t, 200, "")
+	limiter := partnerguard.NewLimiter(1)
+	host := strings.TrimPrefix(p.srv.URL, "http://")
+	release, _ := limiter.TryAcquire(host) // another worker is already sending to this host
+	defer release()
+
+	d := claimOne(t, st, p.srv.URL, 1, false)
+	before := time.Now()
+	out, err := guardedWorker(st, limiter, nil).Process(context.Background(), d)
+	if err != nil || out != worker.Postponed {
+		t.Fatalf("Process = %v, %v; want Postponed", out, err)
+	}
+	if p.hits.Load() != 0 {
+		t.Fatal("request sent despite the host limit")
+	}
+	assertPostponedUnsent(t, st, d, 5*time.Second, before)
+}
+
+func TestProcessCountsOnlyPartnerFailuresAgainstTheCircuit(t *testing.T) {
+	st := store.New(testpg.New(t))
+	ctx := context.Background()
+	p := newPartner(t, 400, "") // the partner is up, it just rejects the payload
+	w := guardedWorker(st, nil, partnerguard.NewBreaker(1, 30*time.Second, nil))
+
+	if out, _ := w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false)); out != worker.Dead {
+		t.Fatalf("400 = %v, want Dead", out)
+	}
+	if out, _ := w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false)); out == worker.Postponed {
+		t.Fatal("a 4xx opened the circuit")
+	}
+}
+
+type stepClock struct{ t time.Time }
+
+func (c *stepClock) Now() time.Time          { return c.t }
+func (c *stepClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// A half-open circuit hands out one probe. If the limiter then postponed
+// that delivery, the probe would never report back and the circuit would
+// stay half-open forever.
+func TestProcessDoesNotLoseTheProbeToTheLimiter(t *testing.T) {
+	st := store.New(testpg.New(t))
+	ctx := context.Background()
+	p := newPartner(t, 503, "")
+	clk := &stepClock{t: time.Unix(0, 0)}
+	limiter := partnerguard.NewLimiter(1)
+	w := guardedWorker(st, limiter, partnerguard.NewBreaker(1, 30*time.Second, clk.Now))
+	host := strings.TrimPrefix(p.srv.URL, "http://")
+
+	w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false)) // 503: circuit opens
+	clk.Advance(31 * time.Second)                        // cooldown over: next caller may probe
+
+	release, _ := limiter.TryAcquire(host)
+	if out, _ := w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false)); out != worker.Postponed {
+		t.Fatalf("with host at limit = %v, want Postponed", out)
+	}
+	release()
+
+	out, err := w.Process(ctx, claimOne(t, st, p.srv.URL, 1, false))
+	if err != nil || out == worker.Postponed || p.hits.Load() != 2 {
+		t.Fatalf("probe after the limit cleared = %v, %v, partner hits %d; want the probe sent", out, err, p.hits.Load())
 	}
 }

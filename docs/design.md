@@ -272,7 +272,17 @@ A whale with a million pending deliveries gets the same share per round as an ac
 
 - Per-endpoint concurrency limit and circuit breaker: a slow partner holds only a few workers, and while the circuit is open deliveries are postponed without using up attempts. A retry budget (~20% of attempts) keeps failing partners from crowding out fresh traffic.
 
+  - The limit (8 concurrent requests per host:port, per replica) never blocks: a worker that cannot get a slot postpones the delivery by 1s and moves on, so a slow partner cannot tie up the pool.
+  - The breaker opens after 5 consecutive partner-side failures (5xx, 408, 429, timeouts, connection errors; a 4xx means the partner is up). While open, deliveries are postponed until the cooldown (30s) ends. Then a single probe is let through: success closes the circuit, failure opens it for another cooldown. The limit is checked before the breaker, so a probe is never postponed and lost.
+  - Postponing refunds the attempt the claim counted, so an outage on the partner side does not push deliveries towards dead.
+  - Limits and circuits are per replica (in memory). With N replicas a host sees at most N × 8 concurrent requests; a shared limit would need coordination and is not worth it at this scale.
+  - Not implemented yet: the retry budget.
+
 - SSRF guard: the dialer refuses private, loopback and link-local addresses.
+
+  - The check runs on the IP actually dialled, after DNS resolution, so a hostname that resolves (or re-resolves) to an internal address is caught. Also refused: unspecified, multicast, carrier-grade NAT (100.64.0.0/10) and IPv4-mapped forms of all of these. Plain http:// and non-HTTP schemes are refused too, and environment proxies are ignored.
+  - A refused target is dead, not retried: retrying cannot make the URL acceptable.
+  - Local development only: ALLOW_HTTP and ALLOW_PRIVATE_NETWORKS relax both checks so the fake partner on the compose network works; the notifier logs a warning when either is set.
 
 ## 5. Observability and monitoring
 

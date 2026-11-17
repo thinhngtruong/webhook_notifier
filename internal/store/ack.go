@@ -46,22 +46,8 @@ func (s *Store) AckDead(ctx context.Context, l Lease, reason string) error {
 // sure its account is in the ring for that time. The claim may have taken
 // the account out of the ring while this delivery was in flight.
 func (s *Store) AckRetry(ctx context.Context, l Lease, delay time.Duration, reason string) error {
-	var updated int64
-	err := s.pool.QueryRow(ctx, `
-			WITH upd AS (
-				UPDATE deliveries
-				   SET status = 'pending', lease_until = NULL, last_error = $4,
-				       next_attempt_at = now() + make_interval(secs => $5)
-				 WHERE `+leaseMatch+`
-				RETURNING account_id, next_attempt_at
-			), act AS (`+activateSQL(`SELECT account_id, next_attempt_at AS due FROM upd`)+`)
-			SELECT count(*) FROM upd`,
-		l.ID, l.EventTime, l.Attempt, reason, seconds(delay)).Scan(&updated)
-	if err != nil {
+	if err := s.reschedule(ctx, l, delay, reason, false); err != nil {
 		return fmt.Errorf("ack retry %s: %w", l.ID, err)
-	}
-	if updated == 0 {
-		return ErrStale
 	}
 	return nil
 }
@@ -142,4 +128,42 @@ func (s *Store) ReplayDead(ctx context.Context, f ReplayFilter) (int64, error) {
 		return 0, fmt.Errorf("replay dead: %w", err)
 	}
 	return n, nil
+}
+
+// Postpone puts a leased delivery back to pending, due after delay,
+// without using up an attempt: the request was never sent (circuit open or
+// endpoint at its concurrency limit). The account is reactivated.
+func (s *Store) Postpone(ctx context.Context, l Lease, delay time.Duration, reason string) error {
+	if err := s.reschedule(ctx, l, delay, reason, true); err != nil {
+		return fmt.Errorf("postpone %s: %w", l.ID, err)
+	}
+	return nil
+}
+
+// reschedule returns a leased delivery to pending, due after delay, and
+// activates its account in the same statement. refund gives back the
+// attempt the claim counted. It returns ErrStale if the lease is gone.
+func (s *Store) reschedule(ctx context.Context, l Lease, delay time.Duration, reason string, refund bool) error {
+	attempts := "attempts"
+	if refund {
+		attempts = "attempts - 1"
+	}
+	var updated int64
+	err := s.pool.QueryRow(ctx, `
+		WITH upd AS (
+			UPDATE deliveries
+			   SET status = 'pending', attempts = `+attempts+`, lease_until = NULL, last_error = $4,
+			       next_attempt_at = now() + make_interval(secs => $5)
+			 WHERE `+leaseMatch+`
+			RETURNING account_id, next_attempt_at
+		), act AS (`+activateSQL(`SELECT account_id, next_attempt_at AS due FROM upd`)+`)
+		SELECT count(*) FROM upd`,
+		l.ID, l.EventTime, l.Attempt, reason, seconds(delay)).Scan(&updated)
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return ErrStale
+	}
+	return nil
 }

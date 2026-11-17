@@ -3,10 +3,14 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -25,28 +29,81 @@ type Response struct {
 	Duration   time.Duration
 }
 
-// Sender POSTs signed payloads. Redirects are never followed.
-type Sender struct {
-	client *http.Client
-	now    func() time.Time
+// ErrBlockedTarget means the URL may not be called: plain HTTP when only
+// HTTPS is allowed, or an address in a private, loopback, link-local or
+// otherwise internal range (SSRF protection).
+var ErrBlockedTarget = errors.New("blocked target")
+
+// SenderOptions configures a Sender. The zero value of the Allow fields is
+// the production setting.
+type SenderOptions struct {
+	Timeout              time.Duration
+	Now                  func() time.Time // nil: time.Now
+	AllowHTTP            bool             // allow plain http:// URLs (local dev)
+	AllowPrivateNetworks bool             // allow internal addresses (local dev)
 }
 
-// NewSender returns a Sender with the given per-request timeout. A nil now
-// uses time.Now.
-func NewSender(timeout time.Duration, now func() time.Time) *Sender {
-	if now == nil {
-		now = time.Now
+// Sender POSTs signed payloads. Redirects are never followed.
+type Sender struct {
+	client    *http.Client
+	now       func() time.Time
+	allowHTTP bool
+}
+
+// NewSender returns a Sender.
+func NewSender(o SenderOptions) *Sender {
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	dialer := &net.Dialer{Timeout: o.Timeout}
+	if !o.AllowPrivateNetworks {
+		// Check the address actually dialled, after DNS resolution, so a
+		// hostname that resolves (or re-resolves) to an internal IP is
+		// caught too.
+		dialer.Control = func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip, err := netip.ParseAddr(host)
+			if err != nil || IsBlockedIP(ip) {
+				return fmt.Errorf("%w: %s is an internal address", ErrBlockedTarget, host)
+			}
+			return nil
+		}
 	}
 	return &Sender{
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout: o.Timeout,
+			Transport: &http.Transport{
+				Proxy:               nil, // never route partner traffic through an env proxy
+				DialContext:         dialer.DialContext,
+				TLSHandshakeTimeout: o.Timeout,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     90 * time.Second,
+				ForceAttemptHTTP2:   true,
+			},
 			// A redirect would send the signed payload somewhere the
 			// partner did not register; report the 3xx instead.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		now: now,
+		now:       o.Now,
+		allowHTTP: o.AllowHTTP,
 	}
 }
+
+// IsBlockedIP reports whether ip is an internal address partners may not
+// point us at.
+func IsBlockedIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || sharedAddressSpace.Contains(ip)
+}
+
+// sharedAddressSpace is 100.64.0.0/10 (carrier-grade NAT, RFC 6598), which
+// netip does not classify as private.
+var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
 
 // maxDrain bounds how much of a response body is read so the connection
 // can be reused without letting a partner stream an unbounded body.
@@ -58,6 +115,15 @@ func (s *Sender) Send(ctx context.Context, r Request) (Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(r.Body))
 	if err != nil {
 		return Response{}, fmt.Errorf("build request: %w", err)
+	}
+	switch req.URL.Scheme {
+	case "https":
+	case "http":
+		if !s.allowHTTP {
+			return Response{}, fmt.Errorf("%w: plain http is not allowed", ErrBlockedTarget)
+		}
+	default:
+		return Response{}, fmt.Errorf("%w: unsupported scheme %q", ErrBlockedTarget, req.URL.Scheme)
 	}
 	ts := s.now().Unix()
 	req.Header.Set("Content-Type", "application/json")

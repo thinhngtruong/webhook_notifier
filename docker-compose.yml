@@ -7,6 +7,10 @@ x-notifier: &notifier
   environment:
     DATABASE_URL: postgres://notifier:notifier@postgres:5432/notifier?sslmode=disable
     HTTP_ADDR: ":8080"
+    # The fake partner is plain HTTP on the compose network. Production
+    # keeps both checks on (HTTPS only, no internal addresses).
+    ALLOW_HTTP: "true"
+    ALLOW_PRIVATE_NETWORKS: "true"
   depends_on:
     postgres:
       condition: service_healthy

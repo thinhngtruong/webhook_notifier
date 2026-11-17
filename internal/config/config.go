@@ -43,6 +43,13 @@ type Config struct {
 	// HTTP delivery.
 	HTTPTimeout time.Duration
 
+	// Partner protection.
+	PerHostConcurrency   int
+	BreakerThreshold     int
+	BreakerCooldown      time.Duration
+	AllowHTTP            bool // local dev only: allow http:// post_urls
+	AllowPrivateNetworks bool // local dev only: allow internal addresses
+
 	// Reaper.
 	ReaperInterval time.Duration
 	ReaperBatch    int // leases reset per statement
@@ -51,23 +58,26 @@ type Config struct {
 // Default returns the configuration described in docs/design.md.
 func Default() Config {
 	return Config{
-		DatabaseURL:       "postgres://notifier:notifier@localhost:5432/notifier?sslmode=disable",
-		HTTPAddr:          ":8080",
-		DispatchBatchSize: 500,
-		WebhookCacheTTL:   30 * time.Second,
-		AccountsPerTick:   50,
-		Quantum:           10,
-		Workers:           64,
-		ClaimInterval:     100 * time.Millisecond,
-		LeaseDuration:     30 * time.Second,
-		BackoffBase:       30 * time.Second,
-		BackoffFactor:     3,
-		BackoffMax:        8 * time.Hour,
-		MaxAttempts:       10,
-		JitterRatio:       0.2,
-		HTTPTimeout:       10 * time.Second,
-		ReaperInterval:    10 * time.Second,
-		ReaperBatch:       1000,
+		DatabaseURL:        "postgres://notifier:notifier@localhost:5432/notifier?sslmode=disable",
+		HTTPAddr:           ":8080",
+		DispatchBatchSize:  500,
+		WebhookCacheTTL:    30 * time.Second,
+		AccountsPerTick:    50,
+		Quantum:            10,
+		Workers:            64,
+		ClaimInterval:      100 * time.Millisecond,
+		LeaseDuration:      30 * time.Second,
+		BackoffBase:        30 * time.Second,
+		BackoffFactor:      3,
+		BackoffMax:         8 * time.Hour,
+		MaxAttempts:        10,
+		JitterRatio:        0.2,
+		HTTPTimeout:        10 * time.Second,
+		PerHostConcurrency: 8,
+		BreakerThreshold:   5,
+		BreakerCooldown:    30 * time.Second,
+		ReaperInterval:     10 * time.Second,
+		ReaperBatch:        1000,
 	}
 }
 
@@ -98,6 +108,11 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.IntVar(&c.MaxAttempts, "max-attempts", c.MaxAttempts, "attempts before a delivery is dead (MAX_ATTEMPTS)")
 	fs.Float64Var(&c.JitterRatio, "jitter", c.JitterRatio, "retry delay jitter ratio, 0.2 = ±20% (JITTER_RATIO)")
 	fs.DurationVar(&c.HTTPTimeout, "http-timeout", c.HTTPTimeout, "partner request timeout (HTTP_TIMEOUT)")
+	fs.IntVar(&c.PerHostConcurrency, "per-host-concurrency", c.PerHostConcurrency, "max concurrent requests per partner host (PER_HOST_CONCURRENCY)")
+	fs.IntVar(&c.BreakerThreshold, "breaker-threshold", c.BreakerThreshold, "consecutive failures that open a host circuit (BREAKER_THRESHOLD)")
+	fs.DurationVar(&c.BreakerCooldown, "breaker-cooldown", c.BreakerCooldown, "how long an open circuit refuses requests (BREAKER_COOLDOWN)")
+	fs.BoolVar(&c.AllowHTTP, "allow-http", c.AllowHTTP, "LOCAL DEV ONLY: allow http:// post_urls (ALLOW_HTTP)")
+	fs.BoolVar(&c.AllowPrivateNetworks, "allow-private-networks", c.AllowPrivateNetworks, "LOCAL DEV ONLY: allow internal addresses (ALLOW_PRIVATE_NETWORKS)")
 	fs.DurationVar(&c.ReaperInterval, "reaper-interval", c.ReaperInterval, "how often expired leases are reset (REAPER_INTERVAL)")
 	fs.IntVar(&c.ReaperBatch, "reaper-batch", c.ReaperBatch, "expired leases reset per statement (REAPER_BATCH)")
 	if err := fs.Parse(args); err != nil {
@@ -181,6 +196,11 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	integer("MAX_ATTEMPTS", &c.MaxAttempts)
 	float("JITTER_RATIO", &c.JitterRatio)
 	duration("HTTP_TIMEOUT", &c.HTTPTimeout)
+	integer("PER_HOST_CONCURRENCY", &c.PerHostConcurrency)
+	integer("BREAKER_THRESHOLD", &c.BreakerThreshold)
+	duration("BREAKER_COOLDOWN", &c.BreakerCooldown)
+	boolean("ALLOW_HTTP", &c.AllowHTTP)
+	boolean("ALLOW_PRIVATE_NETWORKS", &c.AllowPrivateNetworks)
 	duration("REAPER_INTERVAL", &c.ReaperInterval)
 	integer("REAPER_BATCH", &c.ReaperBatch)
 
@@ -212,6 +232,9 @@ func (c Config) Validate() error {
 	check(c.MaxAttempts > 0, "max attempts must be > 0")
 	check(c.JitterRatio >= 0 && c.JitterRatio < 1, "jitter ratio must be in [0, 1)")
 	check(c.HTTPTimeout > 0, "HTTP timeout must be > 0")
+	check(c.PerHostConcurrency > 0, "per-host concurrency must be > 0")
+	check(c.BreakerThreshold > 0, "breaker threshold must be > 0")
+	check(c.BreakerCooldown > 0, "breaker cooldown must be > 0")
 	check(c.ReaperInterval > 0, "reaper interval must be > 0")
 	check(c.ReaperBatch > 0, "reaper batch must be > 0")
 	// A lease shorter than the HTTP timeout would let the reaper hand a

@@ -103,3 +103,25 @@ func TestReaperBatchSetting(t *testing.T) {
 		t.Fatalf("zero batch: err = %v", err)
 	}
 }
+
+func TestPartnerGuardSettings(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PerHostConcurrency != 8 || c.BreakerThreshold != 5 || c.BreakerCooldown != 30*time.Second {
+		t.Errorf("defaults = per-host %d, threshold %d, cooldown %v", c.PerHostConcurrency, c.BreakerThreshold, c.BreakerCooldown)
+	}
+	if c.AllowHTTP || c.AllowPrivateNetworks {
+		t.Error("production defaults must refuse plain HTTP and internal addresses")
+	}
+	c, err = Load(nil, env(map[string]string{"ALLOW_HTTP": "true", "ALLOW_PRIVATE_NETWORKS": "true", "PER_HOST_CONCURRENCY": "2"}))
+	if err != nil || !c.AllowHTTP || !c.AllowPrivateNetworks || c.PerHostConcurrency != 2 {
+		t.Errorf("env overrides = %+v, %v", c, err)
+	}
+	for _, args := range [][]string{{"--per-host-concurrency=0"}, {"--breaker-threshold=0"}, {"--breaker-cooldown=0s"}} {
+		if _, err := Load(args, env(nil)); err == nil {
+			t.Errorf("Load(%v) accepted an invalid value", args)
+		}
+	}
+}

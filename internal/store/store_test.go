@@ -683,3 +683,27 @@ func TestClaimReturnsWebhookTarget(t *testing.T) {
 		t.Errorf("deleted webhook: claimed %v, target %+v; want claimed with nil target", ok, tg)
 	}
 }
+
+func TestPostponeDoesNotConsumeAnAttempt(t *testing.T) {
+	e := newEnv(t)
+	e.fanOut(e.events("account-1", "e", 1, now))
+	d := e.claim(store.ClaimParams{Accounts: 1, Quantum: 1, Limit: 1})[0]
+	if d.Attempts != 1 {
+		t.Fatalf("claimed attempts = %d", d.Attempts)
+	}
+
+	if err := e.s.Postpone(e.ctx, d.Lease(), time.Hour, "circuit open"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.s.GetDelivery(e.ctx, d.ID, d.EventTime)
+	if got.Status != store.StatusPending || got.Attempts != 0 || got.LastError == nil || *got.LastError != "circuit open" {
+		t.Fatalf("after postpone = %+v", got)
+	}
+	if !e.queue("account-1").Active {
+		t.Fatal("postponed delivery's account not back in the ring")
+	}
+	e.assertRing()
+	if err := e.s.Postpone(e.ctx, d.Lease(), time.Hour, "again"); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("second postpone with the same lease = %v, want ErrStale", err)
+	}
+}

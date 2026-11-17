@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"webhook-notifier/internal/config"
+	"webhook-notifier/internal/partnerguard"
 	"webhook-notifier/internal/reaper"
 	"webhook-notifier/internal/replay"
 	"webhook-notifier/internal/scheduler"
@@ -99,11 +100,20 @@ func run() error {
 	var roles sync.WaitGroup
 	if cfg.Worker {
 		st := store.New(pool)
-		w := worker.New(st, worker.NewSender(cfg.HTTPTimeout, nil), worker.Options{
+		if cfg.AllowHTTP || cfg.AllowPrivateNetworks {
+			slog.Warn("partner URL safety checks relaxed; local development only",
+				"allow_http", cfg.AllowHTTP, "allow_private_networks", cfg.AllowPrivateNetworks)
+		}
+		sender := worker.NewSender(worker.SenderOptions{
+			Timeout: cfg.HTTPTimeout, AllowHTTP: cfg.AllowHTTP, AllowPrivateNetworks: cfg.AllowPrivateNetworks,
+		})
+		w := worker.New(st, sender, worker.Options{
 			Backoff: worker.Backoff{
 				Base: cfg.BackoffBase, Factor: cfg.BackoffFactor, Max: cfg.BackoffMax, Jitter: cfg.JitterRatio,
 			},
 			MaxAttempts: cfg.MaxAttempts,
+			Limiter:     partnerguard.NewLimiter(cfg.PerHostConcurrency),
+			Breaker:     partnerguard.NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown, nil),
 		})
 		loop := scheduler.New(st, func(ctx context.Context, d store.Delivery) {
 			if _, err := w.Process(ctx, d); err != nil {
