@@ -183,3 +183,25 @@ func TestEventMaxReceivesSetting(t *testing.T) {
 		t.Fatal("zero accepted")
 	}
 }
+
+func TestRetentionSettings(t *testing.T) {
+	c, err := Load(nil, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DeliveryRetention != 7*24*time.Hour || c.DeadRetention != 30*24*time.Hour || c.RetentionInterval != time.Hour {
+		t.Fatalf("defaults = %v / %v / %v", c.DeliveryRetention, c.DeadRetention, c.RetentionInterval)
+	}
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--delivery-retention=240h", "--dead-retention=168h"}, "dead retention"},
+		{[]string{"--dead-retention=2000h"}, "dead retention"},
+		{[]string{"--retention-interval=0s"}, "retention interval"},
+	} {
+		if _, err := Load(tt.args, env(nil)); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("Load(%v) err = %v, want mention of %q", tt.args, err, tt.want)
+		}
+	}
+}

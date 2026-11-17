@@ -894,3 +894,108 @@ func TestReplayMarksDeliveriesAsReplayed(t *testing.T) {
 		t.Fatalf("replayed claim = %+v, want attempt 1 marked replayed", again)
 	}
 }
+
+// oldDeliveries fans out n events at the given time for account and leases
+// them, returning the claimed deliveries.
+func (e *env) oldDeliveries(account string, n int, at time.Time) []store.Delivery {
+	e.t.Helper()
+	e.fanOut(e.events(account, account, n, at))
+	return e.claim(store.ClaimParams{Accounts: 50, Quantum: 50, Limit: 50})
+}
+
+func partitionExists(e *env, at time.Time) bool {
+	e.t.Helper()
+	var ok bool
+	name := "deliveries_p" + at.UTC().Format("20060102")
+	if err := e.pool.QueryRow(e.ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&ok); err != nil {
+		e.t.Fatal(err)
+	}
+	return ok
+}
+
+func TestRetentionDropsOldPartitionsAndArchivesDeadRows(t *testing.T) {
+	e := newEnv(t)
+	old := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	ds := e.oldDeliveries("account-old", 2, old)
+	e.s.AckSucceeded(e.ctx, ds[0].Lease())
+	e.s.AckDead(e.ctx, ds[1].Lease(), "HTTP 400")
+	e.fanOut(e.events("account-new", "n", 1, now)) // recent, pending
+
+	res, err := e.s.ApplyRetention(e.ctx, 7*24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dropped) != 1 || res.Archived != 1 || len(res.Skipped) != 0 {
+		t.Fatalf("retention = %+v, want 1 partition dropped and 1 dead row archived", res)
+	}
+	if partitionExists(e, old) || !partitionExists(e, now) {
+		t.Fatal("wrong partitions dropped")
+	}
+	if c := e.countStatus(store.StatusPending); c != 1 {
+		t.Fatalf("recent pending rows = %d, want 1", c)
+	}
+	if b, _ := e.s.Backlog(e.ctx); b.Dead != 1 {
+		t.Fatalf("dead-letter count = %d, want the archived row counted", b.Dead)
+	}
+}
+
+func TestRetentionKeepsPartitionsWithUnfinishedWork(t *testing.T) {
+	e := newEnv(t)
+	old := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	e.fanOut(e.events("account-stuck", "s", 1, old)) // still pending
+	res, err := e.s.ApplyRetention(e.ctx, 7*24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dropped) != 0 || len(res.Skipped) != 1 || !partitionExists(e, old) {
+		t.Fatalf("retention = %+v; a partition with pending work must not be dropped", res)
+	}
+}
+
+func TestRetentionPurgesDeadRowsPastTheirRetention(t *testing.T) {
+	e := newEnv(t)
+	ancient := time.Now().UTC().Add(-40 * 24 * time.Hour)
+	ds := e.oldDeliveries("account-ancient", 1, ancient)
+	e.s.AckDead(e.ctx, ds[0].Lease(), "HTTP 400")
+	// An archived row from an earlier pass, now past the dead retention.
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO deliveries_dead_archive (id, event_time, account_id, webhook_id, event_id, event_name, payload, status)
+		VALUES (gen_random_uuid(), now() - interval '35 days', 'a', gen_random_uuid(), 'x', 'subscriber.created', '{}', 'dead')`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.s.ApplyRetention(e.ctx, 7*24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dropped) != 1 || res.Archived != 0 || res.Purged != 1 {
+		t.Fatalf("retention = %+v, want the 40-day partition dropped without archiving and 1 archived row purged", res)
+	}
+	if b, _ := e.s.Backlog(e.ctx); b.Dead != 0 {
+		t.Fatalf("dead count = %d after purge", b.Dead)
+	}
+}
+
+func TestReplayRestoresArchivedDeadDeliveries(t *testing.T) {
+	e := newEnv(t)
+	old := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	ds := e.oldDeliveries("account-old", 1, old)
+	e.s.AckDead(e.ctx, ds[0].Lease(), "HTTP 400")
+	if _, err := e.s.ApplyRetention(e.ctx, 7*24*time.Hour, 30*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := e.s.ReplayDead(e.ctx, store.ReplayFilter{AccountID: "account-old"})
+	if err != nil || n != 1 {
+		t.Fatalf("replay = %d, %v; want the archived delivery", n, err)
+	}
+	if !partitionExists(e, old) || !e.queue("account-old").Active {
+		t.Fatal("replayed archived delivery needs its partition back and its account in the ring")
+	}
+	got := e.claim(store.ClaimParams{Accounts: 10, Quantum: 10, Limit: 10})
+	if len(got) != 1 || got[0].ID != ds[0].ID || got[0].ReplayedAt == nil || got[0].Attempts != 1 {
+		t.Fatalf("claim after replay = %+v", got)
+	}
+	if b, _ := e.s.Backlog(e.ctx); b.Dead != 0 {
+		t.Fatalf("archive still counted %d dead after replay", b.Dead)
+	}
+	e.assertRing()
+}

@@ -109,8 +109,13 @@ func (s *Store) ReplayDead(ctx context.Context, f ReplayFilter) (int64, error) {
 		to = &f.To
 	}
 
+	archived, err := s.replayArchived(ctx, account, f.WebhookID, from, to)
+	if err != nil {
+		return 0, err
+	}
+
 	var n int64
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 			WITH upd AS (
 				UPDATE deliveries
 				   SET status = 'pending', attempts = 0, next_attempt_at = now(),
@@ -125,7 +130,50 @@ func (s *Store) ReplayDead(ctx context.Context, f ReplayFilter) (int64, error) {
 			SELECT count(*) FROM upd`,
 		account, f.WebhookID, from, to).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("replay dead: %w", err)
+		return archived, fmt.Errorf("replay dead: %w", err)
+	}
+	return archived + n, nil
+}
+
+// archiveFilter matches the replay filter ($1 account, $2 webhook, $3/$4
+// event-time range) on deliveries_dead_archive.
+const archiveFilter = `($1::text IS NULL OR account_id = $1)
+	   AND ($2::uuid IS NULL OR webhook_id = $2)
+	   AND ($3::timestamptz IS NULL OR event_time >= $3)
+	   AND ($4::timestamptz IS NULL OR event_time < $4)`
+
+// replayArchived moves matching dead deliveries from the archive (their
+// partition was dropped by retention) back into deliveries as pending,
+// recreating their day partitions, and activates their accounts.
+func (s *Store) replayArchived(ctx context.Context, account *string, webhook *UUID, from, to *time.Time) (int64, error) {
+	var first, last *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT min(event_time), max(event_time) FROM deliveries_dead_archive WHERE `+archiveFilter,
+		account, webhook, from, to).Scan(&first, &last); err != nil {
+		return 0, fmt.Errorf("replay archived: %w", err)
+	}
+	if first == nil {
+		return 0, nil
+	}
+	if err := s.EnsurePartitions(ctx, *first, *last); err != nil {
+		return 0, fmt.Errorf("replay archived: %w", err)
+	}
+	var n int64
+	err := s.pool.QueryRow(ctx, `
+		WITH moved AS (
+			DELETE FROM deliveries_dead_archive WHERE `+archiveFilter+`
+			RETURNING id, event_time, account_id, webhook_id, event_id, event_name, payload, created_at, trace_context
+		), ins AS (
+			INSERT INTO deliveries (id, event_time, account_id, webhook_id, event_id, event_name, payload,
+			                        status, attempts, next_attempt_at, created_at, trace_context, replayed_at)
+			SELECT id, event_time, account_id, webhook_id, event_id, event_name, payload,
+			       'pending', 0, now(), created_at, trace_context, now()
+			  FROM moved
+			ON CONFLICT (id, event_time) DO NOTHING
+			RETURNING account_id, next_attempt_at
+		), act AS (`+activateSQL(`SELECT account_id, next_attempt_at AS due FROM ins`)+`)
+		SELECT count(*) FROM ins`, account, webhook, from, to).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("replay archived: %w", err)
 	}
 	return n, nil
 }

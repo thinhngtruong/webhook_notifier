@@ -69,3 +69,46 @@ func (r *Reaper) Run(ctx context.Context) error {
 		}
 	}
 }
+
+// Retention applies the delivery retention policy periodically: drop
+// daily partitions after keep, keeping dead rows (archived) for keepDead.
+type Retention struct {
+	st             *store.Store
+	keep, keepDead time.Duration
+	interval       time.Duration
+	metrics        *metrics.Metrics
+}
+
+// NewRetention returns a Retention that runs every interval. m may be nil.
+func NewRetention(st *store.Store, keep, keepDead, interval time.Duration, m *metrics.Metrics) *Retention {
+	return &Retention{st: st, keep: keep, keepDead: keepDead, interval: interval, metrics: m}
+}
+
+// Run applies retention every interval until ctx is cancelled, then
+// returns nil. Errors are logged and retried on the next tick.
+func (r *Retention) Run(ctx context.Context) error {
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		res, err := r.st.ApplyRetention(ctx, r.keep, r.keepDead)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			r.metrics.Error(ctx, "retention")
+			slog.Error("apply retention", "err", err)
+		}
+		if len(res.Dropped) > 0 || res.Purged > 0 {
+			slog.Info("retention applied", "dropped", res.Dropped, "archived_dead", res.Archived, "purged_dead", res.Purged)
+		}
+		if len(res.Skipped) > 0 {
+			// Work older than the retention window is stuck: worth a look.
+			slog.Warn("old partitions kept: they still hold pending or in-flight deliveries", "partitions", res.Skipped)
+		}
+	}
+}

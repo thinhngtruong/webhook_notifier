@@ -16,7 +16,8 @@ Time spent per step (for the total estimate).
 | 9b. Input dead-letter queue | 0.75h | Receive limit + explicit dead-lettering of malformed events, gauges, page alert (promtool-tested), runbook. Found and fixed: a zero event time made fan-out create a partition per day back to year 1 (62,160 partitions before the test was stopped). |
 | 9. README | 0.5h | How to run, assumptions, benchmark results, limitations, next steps. |
 | 10. Tracing | 1h | W3C trace context on queue and delivery rows; producer, fan-out, deliver and HTTP spans; parent-based ratio sampling; OTLP to a local trace viewer. Found: a package-level tracer stays bound to the first provider installed. |
-| **Total** | **~14h** | |
+| 11. Operability gaps | 1.25h | replayed_at (replays out of the freshness metric), requeue-events command, partition retention with a 30-day dead archive and replay from it. |
+| **Total** | **~15h** | |
 
 ## Process
 

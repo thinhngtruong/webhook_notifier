@@ -60,6 +60,11 @@ type Config struct {
 	// Reaper.
 	ReaperInterval time.Duration
 	ReaperBatch    int // leases reset per statement
+
+	// Retention.
+	DeliveryRetention time.Duration // daily partitions dropped after this
+	DeadRetention     time.Duration // dead deliveries kept (archived) this long
+	RetentionInterval time.Duration
 }
 
 // Default returns the configuration described in docs/design.md.
@@ -88,6 +93,9 @@ func Default() Config {
 		BreakerCooldown:    30 * time.Second,
 		ReaperInterval:     10 * time.Second,
 		ReaperBatch:        1000,
+		DeliveryRetention:  7 * 24 * time.Hour,
+		DeadRetention:      30 * 24 * time.Hour,
+		RetentionInterval:  time.Hour,
 	}
 }
 
@@ -128,6 +136,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.BoolVar(&c.AllowPrivateNetworks, "allow-private-networks", c.AllowPrivateNetworks, "LOCAL DEV ONLY: allow internal addresses (ALLOW_PRIVATE_NETWORKS)")
 	fs.DurationVar(&c.ReaperInterval, "reaper-interval", c.ReaperInterval, "how often expired leases are reset (REAPER_INTERVAL)")
 	fs.IntVar(&c.ReaperBatch, "reaper-batch", c.ReaperBatch, "expired leases reset per statement (REAPER_BATCH)")
+	fs.DurationVar(&c.DeliveryRetention, "delivery-retention", c.DeliveryRetention, "daily delivery partitions are dropped after this (DELIVERY_RETENTION)")
+	fs.DurationVar(&c.DeadRetention, "dead-retention", c.DeadRetention, "dead deliveries are archived and kept this long (DEAD_RETENTION)")
+	fs.DurationVar(&c.RetentionInterval, "retention-interval", c.RetentionInterval, "how often retention runs (RETENTION_INTERVAL)")
 	fs.Func("large-accounts", "comma-separated accounts labelled tier=large in metrics (LARGE_ACCOUNTS)", func(v string) error {
 		c.LargeAccounts = splitList(v)
 		return nil
@@ -226,6 +237,9 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 	boolean("ALLOW_PRIVATE_NETWORKS", &c.AllowPrivateNetworks)
 	duration("REAPER_INTERVAL", &c.ReaperInterval)
 	integer("REAPER_BATCH", &c.ReaperBatch)
+	duration("DELIVERY_RETENTION", &c.DeliveryRetention)
+	duration("DEAD_RETENTION", &c.DeadRetention)
+	duration("RETENTION_INTERVAL", &c.RetentionInterval)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("config: invalid environment: %w", errors.Join(errs...))
@@ -263,6 +277,12 @@ func (c Config) Validate() error {
 	check(c.BreakerCooldown > 0, "breaker cooldown must be > 0")
 	check(c.ReaperInterval > 0, "reaper interval must be > 0")
 	check(c.ReaperBatch > 0, "reaper batch must be > 0")
+	check(c.DeliveryRetention > 0, "delivery retention must be > 0")
+	// Replaying from the archive recreates partitions, and fan-out refuses a
+	// batch spanning more than 62 days, so dead retention stays under that.
+	check(c.DeadRetention >= c.DeliveryRetention && c.DeadRetention <= 60*24*time.Hour,
+		"dead retention must be at least the delivery retention and at most 60 days")
+	check(c.RetentionInterval > 0, "retention interval must be > 0")
 	// A lease shorter than the HTTP timeout would let the reaper hand a
 	// delivery to a second worker while the first is still sending it.
 	check(c.LeaseDuration > c.HTTPTimeout, "lease duration must be longer than the HTTP timeout")

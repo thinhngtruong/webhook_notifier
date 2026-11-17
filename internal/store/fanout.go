@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -166,3 +168,103 @@ func (s *Store) ensurePartition(ctx context.Context, day time.Time) error {
 	s.mu.Unlock()
 	return nil
 }
+
+// RetentionResult reports what ApplyRetention did.
+type RetentionResult struct {
+	Dropped  []string // partitions dropped
+	Skipped  []string // old partitions kept because they still hold unfinished work
+	Archived int64    // dead rows moved to the archive before dropping
+	Purged   int64    // archived rows deleted after the dead retention
+}
+
+// ApplyRetention drops daily delivery partitions whose day ended more than
+// keep ago, archiving their dead rows younger than keepDead first, and
+// purges archived rows older than keepDead.
+//
+// A partition that still holds pending or in-flight rows is skipped, never
+// dropped: that work would be lost. Dropping takes a short exclusive lock
+// on the parent table; partitions are dropped one per transaction under the
+// partition advisory lock, so EnsurePartitions on other replicas waits.
+func (s *Store) ApplyRetention(ctx context.Context, keep, keepDead time.Duration) (RetentionResult, error) {
+	var res RetentionResult
+	var dbNow time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT now()`).Scan(&dbNow); err != nil {
+		return res, fmt.Errorf("retention: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.relname FROM pg_inherits i
+		  JOIN pg_class c ON c.oid = i.inhrelid
+		  JOIN pg_class p ON p.oid = i.inhparent
+		 WHERE p.relname = 'deliveries'`)
+	if err != nil {
+		return res, fmt.Errorf("retention: list partitions: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return res, fmt.Errorf("retention: list partitions: %w", err)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		day, err := time.Parse("20060102", strings.TrimPrefix(name, "deliveries_p"))
+		if err != nil || !day.Add(24*time.Hour).Add(keep).Before(dbNow) {
+			continue // not one of ours, or still within retention
+		}
+		var dropped bool
+		var archived int64
+		err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", partitionLockKey); err != nil {
+				return err
+			}
+			// Identifiers come from pg_class names matching our pattern.
+			table := pgx.Identifier{name}.Sanitize()
+			var unfinished bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+table+
+				` WHERE status IN ('pending', 'in_flight'))`).Scan(&unfinished); err != nil {
+				return err
+			}
+			if unfinished {
+				return nil
+			}
+			tag, err := tx.Exec(ctx, `
+				INSERT INTO deliveries_dead_archive (`+deliveryArchiveColumns+`)
+				SELECT `+deliveryArchiveColumns+` FROM `+table+`
+				 WHERE status = 'dead' AND event_time >= now() - make_interval(secs => $1)
+				ON CONFLICT (id, event_time) DO NOTHING`, seconds(keepDead))
+			if err != nil {
+				return err
+			}
+			archived = tag.RowsAffected()
+			if _, err := tx.Exec(ctx, `DROP TABLE `+table); err != nil {
+				return err
+			}
+			dropped = true
+			return nil
+		})
+		if err != nil {
+			return res, fmt.Errorf("retention: %s: %w", name, err)
+		}
+		if !dropped {
+			res.Skipped = append(res.Skipped, name)
+			continue
+		}
+		res.Dropped = append(res.Dropped, name)
+		res.Archived += archived
+		s.mu.Lock()
+		delete(s.partitions, day.Format("20060102"))
+		s.mu.Unlock()
+	}
+
+	tag, err := s.pool.Exec(ctx, `DELETE FROM deliveries_dead_archive WHERE event_time < now() - make_interval(secs => $1)`, seconds(keepDead))
+	if err != nil {
+		return res, fmt.Errorf("retention: purge archive: %w", err)
+	}
+	res.Purged = tag.RowsAffected()
+	return res, nil
+}
+
+// deliveryArchiveColumns lists the columns copied between deliveries and
+// deliveries_dead_archive, explicitly so column order cannot drift.
+const deliveryArchiveColumns = `id, event_time, account_id, webhook_id, event_id, event_name, payload,
+	status, attempts, next_attempt_at, lease_until, last_error, delivered_at, created_at,
+	trace_context, replayed_at`

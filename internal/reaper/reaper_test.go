@@ -113,3 +113,53 @@ func TestRunCountsReaperErrors(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestRetentionRunDropsOldPartitions(t *testing.T) {
+	pool := testpg.New(t)
+	st := store.New(pool)
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	d := seedLeasedAt(t, st, "account-old", old)
+	st.AckSucceeded(ctx, d.Lease())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- reaper.NewRetention(st, 7*24*time.Hour, 30*24*time.Hour, 20*time.Millisecond, nil).Run(runCtx)
+	}()
+	name := "deliveries_p" + old.Format("20060102")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var exists bool
+		pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists)
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("partition %s never dropped", name)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedLeasedAt(t *testing.T, st *store.Store, account string, at time.Time) store.Delivery {
+	t.Helper()
+	ctx := context.Background()
+	hook, err := st.InsertWebhook(ctx, store.Webhook{AccountID: account, PostURL: "https://partner.example", Events: []string{"subscriber.created"}, Secret: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.FanOut(ctx, []store.NewDelivery{{EventID: account + "-1", EventName: "subscriber.created", EventTime: at, AccountID: account, WebhookID: hook, Payload: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := st.Claim(ctx, store.ClaimParams{Accounts: 1, Quantum: 1, Limit: 1, Lease: time.Minute})
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("claim = %v, %v", ds, err)
+	}
+	return ds[0]
+}

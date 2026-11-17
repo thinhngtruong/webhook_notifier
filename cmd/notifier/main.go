@@ -192,6 +192,12 @@ func run() error {
 				slog.Error("reaper", "err", err)
 			}
 		})
+		ret := reaper.NewRetention(st, cfg.DeliveryRetention, cfg.DeadRetention, cfg.RetentionInterval, m)
+		roles.Go(func() {
+			if err := ret.Run(ctx); err != nil {
+				slog.Error("retention", "err", err)
+			}
+		})
 	}
 
 	if err := m.Observe(sources); err != nil {

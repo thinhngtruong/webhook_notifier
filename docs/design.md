@@ -147,7 +147,7 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 - Partial indexes only hold pending, in-flight or dead rows, so they stay small however large the table grows.
 
-- Partitioning by event_time (from the event, not insert time) keeps a redelivered event in the same partition, so the primary key still deduplicates. Old partitions are dropped, not deleted row by row.
+- Partitioning by event_time (from the event, not insert time) keeps a redelivered event in the same partition, so the primary key still deduplicates. Old partitions are dropped, not deleted row by row. In the PoC the reaper role applies retention hourly: a daily partition is dropped 7 days after its day ends, after copying its dead rows into deliveries_dead_archive, where they are kept 30 days (and counted in the dead-letter gauge). A partition still holding pending or in-flight rows is skipped and logged, never dropped. Replaying an archived delivery recreates its partition and moves it back as pending.
 
 - Daily partitions (UTC) are created on demand before an insert touches a new day, under an advisory lock so replicas do not race on the DDL. There is no default partition: rows in it would block creating that day's real partition later.
 

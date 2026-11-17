@@ -76,7 +76,7 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 - **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
 - **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
 - Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), dropping old daily partitions (retention), and batched acks.
+- Not built yet: the retry budget, SLO burn-rate alerts and an Alertmanager (only the dead-letter alerts exist), and batched acks.
 - Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
 
 ## What I would do next
@@ -84,9 +84,9 @@ The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCAL
 1. Fair ingest: consume the event queue per account (or partitioned by account), so a burst cannot delay other accounts before fan-out.
 2. Let several replicas serve one busy account (split a whale into sub-queues), closing the remaining whale gap.
 3. The SLO burn-rate alerts and Alertmanager routing from the design.
-4. Partition retention (drop daily partitions after 7 days, keeping dead rows for 30), and batched acks to cut write load.
+4. Batched acks to cut write load, and the retry budget.
 5. Run the full-size benchmark on production-like hardware and tune quantum, accounts per tick and pool sizes from the results.
 
 ## Time spent
 
-About 14 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
+About 15 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
