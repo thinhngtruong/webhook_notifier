@@ -56,9 +56,9 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 2.  Scalability: throughput grows by adding stateless worker replicas.
 
-3.  Fairness: a small account's wait does not depend on other accounts' backlog; a whale still uses all spare capacity.
+3.  Fairness: a small account's wait does not depend on other accounts' backlog; a whale uses the capacity small accounts leave free (in the benchmark it finished about 18% later than with a shared queue, because only one replica at a time can claim an account).
 
-4.  Latency: event to first attempt P99 \< 5s for small and medium accounts, even during a whale burst, and P50 \< 1s under normal load. Partner response time is excluded, and a whale in its own burst is measured by throughput instead.
+4.  Latency: event to first attempt P99 \< 5s for small and medium accounts, even during a whale burst, and P50 \< 1s under normal load. Partner response time is excluded, and a whale in its own burst is measured by throughput instead. Measured in the PoC: 4.2s p99 for small accounts during a 50k-event whale burst; at the full 1M burst the first-in-first-out input queue, not the scheduler, becomes the limit (bottlenecks.md, item 7).
 
 5.  Isolation: a slow or broken partner cannot tie up all workers; we never flood a partner and respect Retry-After.
 
@@ -81,9 +81,9 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 1.  Concurrency: with 2,000 deliveries/s (1,000 events/s × 1.5 webhooks, plus headroom) and a partner p50 of 200ms, Little's law gives about 400 requests in flight. If partners slow down to 2s, that becomes 4,000. This is why each endpoint gets its own concurrency limit.
 
-2.  Database: about 3 row writes per delivery, so ~6,000 writes/s at peak. Fine for one PostgreSQL primary with batched claims and acks.
+2.  Database: about 3 row writes per delivery, so ~6,000 writes/s at peak. Fine for one PostgreSQL primary: claims are batched (one pass leases many deliveries); acks are one statement per delivery in the PoC, and batching them is the next step if writes become the limit.
 
-3.  Storage: at ~10% of peak on average, ~13M deliveries/day (15 to 20 GB with indexes), kept in daily partitions.
+3.  Storage: assuming average traffic is ~10% of the peak rate (~150 of the 1,500 deliveries/s), that is ~13M deliveries/day. At ~1.2 to 1.5 KB per delivery (row plus indexes), that is 15 to 20 GB a day, kept in daily partitions.
 
 4.  Cost of a whale without fairness: 1M events at 1,000/s is roughly 17 minutes of backlog. If all accounts share one queue without per-account isolation, small accounts end up stuck in that backlog, whatever order the queue uses.
 
@@ -134,8 +134,11 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 | **Table**      | **Columns**                                                                                                                                     | **Primary key**  | **Notes**                                                                                                         |
 |----------------|-------------------------------------------------------------------------------------------------------------------------------------------------|------------------|-------------------------------------------------------------------------------------------------------------------|
 | webhooks       | id, account_id, post_url, events text\[\], secret, status                                                                                       | id               | Owned by the existing API; read-only for us.                                                                      |
-| deliveries     | id, event_time, account_id, webhook_id, event_id, event_name, payload, status, attempts, next_attempt_at, lease_until, last_error, delivered_at | (id, event_time) | Daily partitions on event_time. id is a deterministic UUID of (event_id, webhook_id): dedup key and X-Webhook-Id. |
+| deliveries     | id, event_time, account_id, webhook_id, event_id, event_name, payload, status, attempts, next_attempt_at, lease_until, last_error, delivered_at, created_at, trace_context, replayed_at | (id, event_time) | Daily partitions on event_time. id is a deterministic UUID of (event_id, webhook_id): dedup key and X-Webhook-Id. |
 | account_queues | account_id, active, last_served_at, next_due_at                                                                                                 | account_id       | Fairness state, one row per account.                                                                              |
+| events_queue | id, name, account_id, event_time, payload, trace_context, enqueued_at, visible_at, receive_count | id | Mock of the platform's event queue: a received event stays invisible until visible_at; ack = delete. |
+| events_dead_letters | id, name, account_id, event_time, payload, trace_context, receive_count, reason, dead_at | id | Input dead-letter queue: malformed events, or events received 5 times without an ack. |
+| deliveries_dead_archive | same columns as deliveries | (id, event_time) | Dead rows of dropped partitions, kept 30 days and replayable. |
 
 | **Index**                                                       | **Used by**                       |
 |-----------------------------------------------------------------|-----------------------------------|
@@ -144,6 +147,10 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 | deliveries (lease_until) WHERE status = in_flight               | Lease Reaper                      |
 | deliveries (account_id, event_time) WHERE status = dead         | Dead-letter inspection and replay |
 | account_queues (last_served_at) WHERE active                    | Scheduler account pick            |
+| deliveries (next_attempt_at) WHERE status = pending | Shared-queue claim (benchmark baseline only) |
+| events_queue (visible_at), events_queue (enqueued_at) | Event receive; input queue age gauge |
+| events_dead_letters (dead_at) | Input dead-letter age gauge |
+| deliveries_dead_archive (account_id, event_time) | Dead-letter inspection and replay after retention |
 
 - Partial indexes only hold pending, in-flight or dead rows, so they stay small however large the table grows.
 
@@ -179,7 +186,7 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 Round-robin with a quantum. Active accounts form a virtual ring ordered by when they were last served. Each turn the scheduler picks up to K accounts from the front of the ring (e.g. 50), takes at most Q due deliveries from each (the quantum, e.g. 10), leases them to workers, and moves those accounts to the back. Accounts with no work left leave the ring.
 
-A whale with a million pending deliveries gets the same share per round as an account with three, so its backlog only affects how many rounds it needs. When nobody else has work, the whale gets the full capacity. To make that true, the quantum is a floor, not a cap, when every due account fits in one pass: an account may then take up to the free slots minus the other picked accounts, and the interleaved ordering still gives every other account its due work first. When more accounts wait than fit in a pass, the quantum holds. (The first benchmark run showed a strict quantum left a lone whale using a fraction of the workers: 51.7s vs 34.3s with a shared queue.) One pass of the claim loop is a single short transaction:
+A whale with a million pending deliveries gets the same share per round as an account with three, so its backlog only affects how many rounds it needs. When nobody else has work, the whale gets the full capacity. To make that true, the quantum is a floor, not a cap, when every due account fits in one pass: an account may then take up to the free slots minus the other picked accounts, and the interleaved ordering still gives every other account its due work first. When more accounts wait than fit in a pass, the quantum holds. (The first benchmark run showed a strict quantum left a lone whale using a fraction of the workers: 51.7s vs 34.3s with a shared queue. With the floor it is 48.9s vs 41.5s; the remaining gap comes from only one replica at a time holding the whale's account row.) One pass of the claim loop is a single short transaction:
 
 > **WITH** picked **AS** (
 >
@@ -299,7 +306,7 @@ The approach: measure what users feel, set SLOs on it, alert on how fast the err
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Latency    | Time from event to first attempt, by account tier. Partner HTTP duration, with successful and failed requests measured separately so timeouts do not distort the numbers. |
 | Traffic    | Events consumed per second, deliveries attempted per second, number of active accounts.                                                                                   |
-| Errors     | Our own errors (DB errors, failed fan-out, panics) kept apart from partner errors (5xx, timeouts, 4xx). Only our errors count against the reliability SLO.                |
+| Errors     | Our own errors (DB errors, failed fan-out, malformed events) kept apart from partner errors (5xx, timeouts, 4xx). Only our errors count against the reliability SLO.                |
 | Saturation | Worker slots in use, DB connection pool usage, per-endpoint semaphores at their limit, pending backlog and the age of the oldest due delivery.                            |
 
 ### SLIs and SLOs
@@ -308,10 +315,10 @@ Each SLI is a ratio of good events to valid events over a rolling 28-day window.
 
 | **SLI (good / valid)**                                                                                                                     | **SLO**                  |
 |--------------------------------------------------------------------------------------------------------------------------------------------|--------------------------|
-| Freshness, small and medium tiers: deliveries whose first attempt happens within 5s of the event / all deliveries for those tiers          | 99%                      |
-| Freshness, all tiers in normal load: first attempt within 1s / all deliveries                                                              | 50% (the p50 target)     |
-| Reliability: deliveries that succeed, or fail only because of the partner (4xx, endpoint down for the whole retry window) / all deliveries | 99.99%                   |
-| Durability: events consumed that produced their deliveries / events consumed (checked by a periodic reconciliation job)                    | 100%, any miss is a page |
+| Freshness, small tier (the PoC has two tiers, small and large): deliveries whose first attempt happens within 5s of the event / all small-tier deliveries | 99%                      |
+| Freshness, all tiers in normal load: first attempt within 1s / all deliveries (measured by the histogram, not alerted in the PoC)           | 50% (the p50 target)     |
+| Reliability: deliveries that succeed, or fail only because of the partner (4xx, endpoint down for the whole retry window) / all deliveries (not measured in the PoC: it needs failures caused by us counted per delivery) | 99.99%                   |
+| Durability: events consumed that produced their deliveries / events consumed (a periodic reconciliation job would check this; it is not built. In the PoC an event that reaches the input dead-letter queue is a durability miss and pages)                    | 100%, any miss is a page |
 
 Large accounts are expected to queue behind their own bursts, so they are measured by throughput instead of latency: while a whale has a backlog, it should get all capacity that small accounts are not using.
 
@@ -336,9 +343,9 @@ Large accounts are expected to queue behind their own bursts, so they are measur
 | webhook_oldest_due_pending_age_seconds                       | Gauge          | Saturation of the whole pipeline                        |
 | webhook_worker_slots_in_use, db_pool_in_use                  | Gauge          | Saturation of a replica                                 |
 | webhook_endpoint_throttled_total, webhook_circuit_open{host} | Counter, Gauge | Partner health and per-endpoint limits being hit        |
-| Input queue: age of oldest event, events waiting             | Gauge          | Ingest falling behind                                   |
-| Input dead-letter queue: events waiting, age of oldest       | Gauge          | Events the Dispatcher could not fan out after N receives (malformed or failing repeatedly) |
-| webhook_events_consumed_total, webhook_errors_total{component} | Counter      | Ingest rate; our own errors (fanout, claim, reaper, event_source, webhook_lookup, metrics), kept apart from partner errors |
+| webhook_input_events_waiting, webhook_input_oldest_event_age_seconds | Gauge          | Ingest falling behind                                   |
+| webhook_input_dead_letters, webhook_input_dead_letter_oldest_age_seconds | Gauge          | Events the Dispatcher could not fan out after N receives (malformed or failing repeatedly) |
+| webhook_events_consumed_total, webhook_errors_total{component} | Counter      | Ingest rate; our own errors (fanout, claim, reaper, retention, event_source, webhook_lookup, malformed_event, metrics), kept apart from partner errors |
 
 Implementation notes (PoC):
 
@@ -367,17 +374,19 @@ Alerts fire on SLO burn rate rather than fixed thresholds, using a long and a sh
 | 5% in 6 hours     | 6x            | 6h and 30min                 | Page       |
 | 10% in 3 days     | 1x            | 3d and 6h                    | Ticket     |
 
-- Durability misses and a growing input queue age also page, since they can mean lost or stuck events. In the PoC, WebhookInputDeadLetters pages as soon as the input dead-letter queue is not empty (deploy/alerts.yml, runbook: docs/runbook.md#input-dead-letters).
+- Durability misses page: in the PoC, WebhookInputDeadLetters pages as soon as the input dead-letter queue is not empty (deploy/alerts.yml, runbook: docs/runbook.md#input-dead-letters). An alert on a growing input queue age is not written yet; webhook_input_oldest_event_age_seconds is exported for it.
 
-- Errors from a single partner endpoint never page. They open that endpoint's circuit breaker and show up on the dashboard and in a daily report.
+- Errors from a single partner endpoint never page. They open that endpoint's circuit breaker and are visible in webhook_deliveries_total by cause and in webhook_circuit_open{host}. A partner dashboard and a daily report are not built in the PoC.
 
 - Dead letters are tickets, never pages: more than 1% of attempts ending dead over 30m (postponed attempts excluded so a circuit cannot hide them), a dead-letter queue above 10,000, or one that grew by more than 1,000 in an hour. Runbook: docs/runbook.md#dead-letters.
 
 - In the PoC: deploy/alerts.yml holds the dead-letter rules (delivery dead letters as tickets, input dead letters as a page), unit-tested with promtool (`make test-alerts`, part of `make test`) and loaded by the compose Prometheus. The freshness SLO burn-rate alerts above are implemented as recording rules (error ratio over 5m, 30m, 1h, 6h, 3d from the first-attempt histogram, small tier, le="5") and the three multi-window alerts, all promtool-tested, including that a page stops once the short window recovers. Alertmanager routes pages and tickets to separate receivers (no integrations in the PoC) and inhibits an SLO's ticket while its page fires; `make test-alerts` checks the routing with amtool. Not alerted yet: the 1s p50 freshness objective, and the reliability SLO, which needs "failed because of us" counted per delivery.
 
-- Every page links to a short runbook: how to tell our fault from a partner fault, how to check fairness (backlog by tier), how to pause or throttle an account, and how to replay dead deliveries.
+- Every alert links to docs/runbook.md, which covers dead letters, input dead letters and freshness: how to tell our fault from a partner's, how to check fairness by tier, how to find the affected accounts, and how to replay dead deliveries (make replay) or requeue dead events (make requeue-events). Pausing or throttling a single account is not built.
 
 ### Dashboards
+
+Not built in the PoC; these are the intended views. The same signals are available as Prometheus queries on `make up-metrics` (see the README).
 
 - SLO overview: remaining error budget and current burn rate for each SLI.
 
@@ -405,5 +414,14 @@ How the PoC runs them (`make bench`, `BENCH_SCALE=quick|default|full`):
 - Timings are compressed so runs take minutes: lease 3s, HTTP timeout 1s, reaper every 0.5s, backoff from 0.5s doubling to 5s, outage 15s instead of 5 minutes. `full` uses the design's sizes (1M whale events, 10-minute runs) and takes hours.
 - Latency is measured by the partner: from the event time in the payload to the first request (first attempt) or the first 2xx (delivered).
 - The whale-burst scenario raises the per-host limit so the single fake partner host is not the bottleneck: it isolates the scheduler. The outage scenario puts the failing endpoint on its own listener (its own host), since limits and circuits are per host.
+
+Results (`make bench`, default scale, on a laptop; runs vary by about ±20%; the full design sizes, `BENCH_SCALE=full`, take hours and were not run):
+
+| Scenario | Run | Result |
+|---|---|---|
+| Whale burst | 50k whale events + 500 small accounts × 10 events, 2 replicas × 32 workers | Small-account p99, event to first attempt: 34.3s shared queue → 4.2s fair. Whale's last delivery: 41.5s shared, 48.9s fair. |
+| Horizontal scaling | 1,200 events/s offered for 10s, 16 workers per replica, partner latency 50ms | 239 / 443 / 846 deliveries/s with 1 / 2 / 4 replicas |
+| Reliability and isolation | 300 events/s for 20s, 5% partner errors, one endpoint down for 15s | 5,997 / 5,997 delivered, 0 dead; healthy endpoints' first-attempt p99 244ms |
+| Crash safety | 300 events/s for 20s, one of 2 replicas killed after 7s | 5,997 / 5,997 delivered, 0 lost, 3 duplicates |
 
 Bottlenecks and how the design evolves at higher scale are covered in the separate Bottleneck discussion doc.

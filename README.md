@@ -5,7 +5,30 @@ Proof of concept for a webhook delivery service. It consumes subscriber events, 
 - Design: [docs/design.md](docs/design.md). Scaling limits: [docs/bottlenecks.md](docs/bottlenecks.md). Operations: [docs/runbook.md](docs/runbook.md).
 - Stack: Go 1.27 and PostgreSQL 16. Dependencies: `pgx/v5`, OpenTelemetry (metrics exported in Prometheus format, traces over OTLP), and the standard library.
 
-## Run it
+## How it works
+
+### Architecture
+
+![Architecture: the dispatcher fans events out into Postgres; replicas claim fairly and deliver to partners](docs/img/component_overview.png)
+
+Every notifier replica is stateless and can run any role; Postgres holds all delivery state. The delivery state machine and the round-robin claim are drawn in [docs/design.md](docs/design.md); Excalidraw sources are in `docs/diagrams/`.
+
+### Delivery sequence
+
+![Sequence: happy path, partner error with retry, and a worker crash recovered by the lease reaper](docs/img/delivery_sequence.png)
+
+A crash after the POST but before the ack means the partner sees the same delivery ID twice (at-least-once); partners can dedupe on `X-Webhook-Id`.
+
+### Steps
+
+1. The **dispatcher** reads events in batches and, in one transaction, inserts one `deliveries` row per subscribed webhook (ID = UUIDv5 of event + webhook, so a redelivered event inserts nothing) and puts the account in the fair ring. Events are acked only after the commit.
+2. Each replica's **claim loop** takes accounts from the front of the ring (least recently served first), takes up to a quantum of due deliveries from each, leases them for 30s and moves those accounts to the back. `FOR UPDATE SKIP LOCKED` lets replicas claim in parallel with no leader. A replica only claims as many deliveries as it has free worker slots.
+3. **Workers** POST with `X-Webhook-Id`, `X-Webhook-Timestamp` and `X-Webhook-Signature` (HMAC-SHA256 of `timestamp.body`), then ack: succeeded; retry with backoff (30s ×3, cap 8h, ±20% jitter, 10 attempts, `Retry-After` honoured); or dead (other 4xx, 3xx, 410 also disables the webhook). Acks are fenced on the attempt number, so a worker whose lease expired cannot overwrite a newer attempt.
+4. The **reaper** returns expired leases (crashed or hung workers) to pending every 10s.
+5. **Dead letters**: deliveries that fail permanently are kept 30 days and replayable (`make replay`, ticket alerts). Events the dispatcher cannot fan out (malformed, or received 5 times without an ack) go to an input dead-letter queue, which pages: their webhooks were never called. See [docs/runbook.md](docs/runbook.md).
+6. **Partner protection**: a per-host concurrency limit and circuit breaker postpone deliveries without using up attempts, and the dialer refuses internal addresses (SSRF) and plain HTTP.
+
+## How to run it
 
 Needs Docker. Go 1.27 is only needed for tests and benchmarks on the host.
 
@@ -36,21 +59,6 @@ make lint        # gofmt + go vet
 
 Each notifier process runs any mix of roles: `notifier --dispatcher --worker --reaper` (compose runs all three on both replicas). Configuration is by environment variable or flag; `notifier -h` lists them with defaults from the design.
 
-## How it works
-
-```
-producer → events_queue → Dispatcher → deliveries (+ account ring) → fair claim → workers → partner
-                          (fan-out, 1 tx)                          (lease)     (sign, POST, ack)
-                                                    Lease Reaper ↺ (expired leases back to pending)
-```
-
-1. The **dispatcher** reads events in batches and, in one transaction, inserts one `deliveries` row per subscribed webhook (ID = UUIDv5 of event + webhook, so a redelivered event inserts nothing) and puts the account in the fair ring. Events are acked only after the commit.
-2. Each replica's **claim loop** takes accounts from the front of the ring (least recently served first), takes up to a quantum of due deliveries from each, leases them for 30s and moves those accounts to the back. `FOR UPDATE SKIP LOCKED` lets replicas claim in parallel with no leader. A replica only claims as many deliveries as it has free worker slots.
-3. **Workers** POST with `X-Webhook-Id`, `X-Webhook-Timestamp` and `X-Webhook-Signature` (HMAC-SHA256 of `timestamp.body`), then ack: succeeded; retry with backoff (30s ×3, cap 8h, ±20% jitter, 10 attempts, `Retry-After` honoured); or dead (other 4xx, 3xx, 410 also disables the webhook). Acks are fenced on the attempt number, so a worker whose lease expired cannot overwrite a newer attempt.
-4. The **reaper** returns expired leases (crashed or hung workers) to pending every 10s.
-5. **Dead letters**: deliveries that fail permanently are kept 30 days and replayable (`make replay`, ticket alerts). Events the dispatcher cannot fan out (malformed, or received 5 times without an ack) go to an input dead-letter queue, which pages: their webhooks were never called. See [docs/runbook.md](docs/runbook.md).
-6. **Partner protection**: a per-host concurrency limit and circuit breaker postpone deliveries without using up attempts, and the dialer refuses internal addresses (SSRF) and plain HTTP.
-
 ## Assumptions
 
 From the brief: about 1,000 events/s at peak, accounts from thousands to millions of subscribers, at-least-once delivery, no ordering, the event source can be mocked. My own assumptions, listed in the design: about 1.5 matching webhooks per event, a whale burst of 1M events within minutes, partner latency p50 200ms / p99 2s with a 10s timeout, a retry window of about 24h over 10 attempts, HMAC-SHA256 signing, deliveries kept 7 days and dead ones 30.
@@ -70,23 +78,3 @@ In the PoC the event source is an `events_queue` table with a visibility timeout
 | **Crash** (one of 2 replicas killed mid-run) | 5,997 / 5,997 delivered, **0 lost**, 3 duplicates (sent but not acked before the crash) |
 
 The full sizes from the design (1M whale events, 10-minute runs) are `BENCH_SCALE=full` and take hours; I have not run them.
-
-## Known limitations
-
-- **Ingest is first-in-first-out.** During a whale burst, small accounts' events wait in the input queue until the whale's earlier events are fanned out. That is most of the 4.2s above, and roughly 50s at a 1M burst, which would break the 5s target. Fairness has to start at ingest (bottlenecks.md, item 7).
-- **The whale is ~18% slower with the fair scheduler** than with a shared queue: only one replica at a time can claim an account, so a lone whale's claims serialise across replicas. The quantum was made work-conserving after the first benchmark showed a 50% gap.
-- Concurrency limits and circuit breakers are **per replica**: with N replicas a partner host can see N × 8 requests at once.
-- Not built yet: the retry budget, batched acks, and alerts for the reliability SLO and the 1s p50 objective (the freshness SLO burn-rate alerts exist). Alertmanager receivers have no integrations, so alerts are only visible in its UI.
-- Benchmarks run replicas in one process with compressed timings; they show behaviour and ratios, not production capacity.
-
-## What I would do next
-
-1. Fair ingest: consume the event queue per account (or partitioned by account), so a burst cannot delay other accounts before fan-out.
-2. Let several replicas serve one busy account (split a whale into sub-queues), closing the remaining whale gap.
-3. Count deliveries that fail because of us, so the reliability SLO can be alerted on like freshness, and connect Alertmanager to real paging and ticketing.
-4. Batched acks to cut write load, and the retry budget.
-5. Run the full-size benchmark on production-like hardware and tune quantum, accounts per tick and pool sizes from the results.
-
-## Time spent
-
-About 16 hours in total; [NOTES.md](NOTES.md) has the time per step and the benchmark history.
