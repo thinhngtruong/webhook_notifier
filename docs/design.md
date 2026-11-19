@@ -93,8 +93,6 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 *Figure 1. Component overview*
 
-*Figure 1. Component overview*
-
 1.  The subscriber service publishes events into an event queue owned by the notifier (mocked in the PoC).
 
 2.  The Dispatcher pulls events from the queue.
@@ -111,11 +109,13 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 8.  The Lease Reaper returns deliveries with an expired lease (crashed worker) to pending.
 
-![Figure 2. Delivery sequence with retry and crash recovery](img/delivery_sequence.png)
+9.  Events that are malformed, or received 5 times without an ack, go to the input DLQ. It pages on-call, and notifier requeue-events puts them back after the fix.
 
-*Figure 2. Delivery sequence with retry and crash recovery*
+10. Deliveries that fail for good (a permanent 4xx, or 10 failed attempts) become dead letters: kept 30 days, a ticket alert, and notifier replay puts them back to pending.
 
-*Figure 2. Delivery sequence with retry and crash recovery*
+![Figure 2. Delivery sequence with retry, crash recovery and dead letters](img/delivery_sequence.png)
+
+*Figure 2. Delivery sequence with retry, crash recovery and dead letters*
 
 ### Key design decisions
 

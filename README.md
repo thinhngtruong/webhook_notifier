@@ -9,13 +9,13 @@ Proof of concept for a webhook delivery service. It consumes subscriber events, 
 
 ### Architecture
 
-![Architecture: the dispatcher fans events out into Postgres; replicas claim fairly and deliver to partners](docs/img/component_overview.png)
+![Architecture: the dispatcher fans events out into Postgres; replicas claim fairly and deliver to partners; failures land in the input DLQ or as dead letters](docs/img/component_overview.png)
 
 Every notifier replica is stateless and can run any role; Postgres holds all delivery state. The delivery state machine and the round-robin claim are drawn in [docs/design.md](docs/design.md); Excalidraw sources are in `docs/diagrams/`.
 
 ### Delivery sequence
 
-![Sequence: happy path, partner error with retry, and a worker crash recovered by the lease reaper](docs/img/delivery_sequence.png)
+![Sequence: happy path, partner error with retry, a worker crash recovered by the lease reaper, and both dead-letter paths](docs/img/delivery_sequence.png)
 
 A crash after the POST but before the ack means the partner sees the same delivery ID twice (at-least-once); partners can dedupe on `X-Webhook-Id`.
 
