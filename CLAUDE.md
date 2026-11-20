@@ -2,7 +2,7 @@
 
 Proof of concept for a webhook delivery service: it consumes subscriber events, fans each one out to the webhooks registered on the account, and POSTs the payload to each webhook's `post_url` reliably and fairly across accounts.
 
-**Read `docs/design.md` before writing code.** It is the source of truth for the architecture, data model, claim query, retry policy and metrics. `docs/bottlenecks.md` covers scaling limits. If the code needs to diverge from the design, say so and update the doc in the same change.
+**Read `docs/design.md` before writing code.** It is the source of truth for the architecture, data model, claim query, retry policy and metrics. If the code needs to diverge from the design, say so and update the doc in the same change.
 
 ## Hard rules
 
@@ -34,7 +34,7 @@ internal/
   partnerguard/ per-endpoint semaphore + circuit breaker
   metrics/     OpenTelemetry instruments + Prometheus exporter for /metrics
 migrations/    plain SQL files, applied on startup
-docs/          design.md, bottlenecks.md, img/, diagrams/ (Excalidraw sources)
+docs/          design.md, runbook.md, img/, diagrams/ (Excalidraw sources)
 docker-compose.yml, Makefile, README.md
 ```
 

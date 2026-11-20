@@ -2,7 +2,8 @@
 
 Proof of concept for a webhook delivery service. It consumes subscriber events, fans each one out to the webhooks registered on the account, and POSTs a signed payload to each webhook's `post_url`: at least once, with retries, and fairly across accounts, so a burst from one huge account does not delay everyone else.
 
-- Design: [docs/design.md](docs/design.md). Scaling limits: [docs/bottlenecks.md](docs/bottlenecks.md). Operations: [docs/runbook.md](docs/runbook.md).
+- Technical spec: [Webhook_Notifier_Design.pdf](Webhook_Notifier_Design.pdf) is the design document for this service: requirements, architecture, data model, fair scheduling, failure handling, observability and benchmark results.
+- Design notes: [docs/design.md](docs/design.md). Operations: [docs/runbook.md](docs/runbook.md).
 - Stack: Go 1.27 and PostgreSQL 16. Dependencies: `pgx/v5`, OpenTelemetry (metrics exported in Prometheus format, traces over OTLP), and the standard library.
 
 ## How it works

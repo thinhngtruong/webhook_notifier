@@ -44,4 +44,4 @@ Two runs on 2026-11-17/18: before and after making the quantum work-conserving. 
 Findings:
 
 1. Fixed (partly): the fair scheduler was not work-conserving for a lone whale (strict quantum of 10 per pass). The quantum is now a floor when every due account fits in a pass. The whale is still ~18% slower than with a shared queue: only one replica can hold the whale's account row at a time, so the other replica's pass comes back empty and idles. Next step would be letting a busy account be served by several replicas (e.g. splitting a whale into sub-queues) if this matters.
-2. Documented, not fixed: in fair mode most small-account latency is ingest. Their events wait behind the whale's 50k events in the FIFO input queue until fanned out (~2.5s here, ~50s at 1M). See bottlenecks.md item 7.
+2. Documented, not fixed: in fair mode most small-account latency is ingest. Their events wait behind the whale's 50k events in the FIFO input queue until fanned out (~2.5s here, ~50s at 1M).

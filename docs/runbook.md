@@ -52,7 +52,7 @@ These are events the dispatcher could not fan out, so none of their webhooks wer
 Alerts: `WebhookFreshnessBudgetBurnFast` and `WebhookFreshnessBudgetBurnSlow` (pages), `WebhookFreshnessBudgetBurnTicket` (ticket). SLO: 99% of small-tier first attempts within 5s of the event. The error ratio per window is recorded as `webhook:freshness_error_ratio:rate5m` … `rate3d`.
 
 1. Ours or theirs? First-attempt latency is time on our side: the event waiting to be fanned out, then the delivery waiting to be claimed. Partner response time is not in it.
-   - `webhook_input_oldest_event_age_seconds` high: ingest is behind (dispatcher or database). A whale burst shows up here first (bottlenecks.md, item 7).
+   - `webhook_input_oldest_event_age_seconds` high: ingest is behind (dispatcher or database). A whale burst shows up here first.
    - `webhook_oldest_due_pending_age_seconds` high with `webhook_worker_slots_in_use` at the limit: not enough workers; scale replicas.
    - Slots in use high and `webhook_http_duration_seconds` rising: slow partners are holding workers; check `webhook_endpoint_throttled_total` and `webhook_circuit_open`.
    - `webhook_errors_total{component="claim"}` rising: database problems in the claim loop.

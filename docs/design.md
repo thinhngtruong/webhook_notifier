@@ -58,7 +58,7 @@ Events in scope: subscriber.created, subscriber.unsubscribed, subscriber.added_t
 
 3.  Fairness: a small account's wait does not depend on other accounts' backlog; a whale uses the capacity small accounts leave free (in the benchmark it finished about 18% later than with a shared queue, because only one replica at a time can claim an account).
 
-4.  Latency: event to first attempt P99 \< 5s for small and medium accounts, even during a whale burst, and P50 \< 1s under normal load. Partner response time is excluded, and a whale in its own burst is measured by throughput instead. Measured in the PoC: 4.2s p99 for small accounts during a 50k-event whale burst; at the full 1M burst the first-in-first-out input queue, not the scheduler, becomes the limit (bottlenecks.md, item 7).
+4.  Latency: event to first attempt P99 \< 5s for small and medium accounts, even during a whale burst, and P50 \< 1s under normal load. Partner response time is excluded, and a whale in its own burst is measured by throughput instead. Measured in the PoC: 4.2s p99 for small accounts during a 50k-event whale burst; at the full 1M burst the first-in-first-out input queue, not the scheduler, becomes the limit.
 
 5.  Isolation: a slow or broken partner cannot tie up all workers; we never flood a partner and respect Retry-After.
 
